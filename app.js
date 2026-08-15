@@ -39,8 +39,8 @@ const DEFAULT_SETTINGS = {
   showGrid: false,
   customText: '',
   quality: '0.9',
-  marginPx: 50,     // gap from the photo's left/right/bottom edges, at a 900px-wide-equivalent baseline
-  sizeScale: 1,      // multiplier on top of that for the map/box/font sizing (1 = 100%)
+  marginPx: 30,     // gap from the photo's left/right/bottom edges, at a 900px-wide-equivalent baseline
+  sizeScale: 1.1,    // multiplier on top of that for the map/box/font sizing (1 = 100%)
 };
 
 function loadSettings() {
@@ -471,35 +471,29 @@ function roundedRectPath(ctx, x, y, w, h, r) {
 
 function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
   // Floating-card layout: a separate rounded map thumbnail bottom-left and a
-  // separate translucent rounded text card to its right, both held off the
-  // photo edges by a margin — matching a typical geotag-camera stamp, rather
-  // than a full-width bar. Sizing is keyed to the photo's SHORT side
-  // (min(W,H)), not just W, so a landscape capture (W > H) doesn't blow the
-  // stamp up huge relative to its own height — portrait and landscape shots
-  // both come out looking the same relative size. Margin and overall stamp
-  // size are both user-adjustable from Settings.
+  // separate translucent rounded text card to its right, spanning the full
+  // photo width (minus a margin on each side) and held up off the bottom
+  // edge by that same margin. The strip's height is a fixed 25% of the
+  // photo's height, and the map's width is a responsive share of the
+  // available width rather than forced into a square — so this adapts
+  // cleanly between portrait and landscape captures with no special-case
+  // rotation logic: whatever W×H the camera actually gives us, the stamp
+  // just occupies the bottom 25% of it, edge to edge. Margin and overall
+  // stamp size are both user-adjustable from Settings.
   const baseScale = Math.min(W, H) / 900;
   const scale = baseScale * (settings.sizeScale || 1);
-  const margin = (settings.marginPx || 50) * baseScale;   // gap from the left/right/bottom edges of the photo
+  const margin = (settings.marginPx || 30) * baseScale;   // gap from the left/right/bottom edges of the photo
   const gap = 18 * scale;      // gap between the map thumbnail and the text card
   const boxPad = 24 * scale;   // inner padding of the text card
-  const lineGap = 40 * scale;
 
-  // work out how many text lines will actually render, so the card height fits
-  let lines = 0;
-  if (settings.showAddress) lines += 1.4; // title (can wrap)
-  if (settings.showAddress && settings.showFlag && geoState.flag) lines += 0.75;
-  if (settings.showAddress) lines += 1; // address/plus-code line
-  if (settings.showCoords) lines += 1;
-  if (settings.showExtra && formatExtra()) lines += 0.85;
-  if (settings.showDatetime) lines += 1;
-  if (settings.customText) lines += 0.85;
-  const textContentH = Math.max(lines * lineGap, 50 * scale);
-  const boxH = textContentH + boxPad * 2;
-  const mapSize = boxH; // map thumbnail matches the text card's height
-
+  const boxH = H * 0.25;                       // stamp occupies 25% of the photo's height
   const bottom = H - margin;
   const boxTop = bottom - boxH;
+  const lineGap = Math.min(40 * scale, (boxH - boxPad * 2) / 5.2); // shrink line spacing if 25% height is tight, so content still fits
+
+  const totalContentW = (W - margin * 2);
+  const mapW = settings.showMap ? totalContentW * 0.32 : 0; // responsive width — not forced to a square
+  const mapSize = boxH; // map height always matches the tag-detail box height
 
   ctx.save();
   const textColor = settings.theme === 'light' ? '#0f172a' : '#ffffff';
@@ -530,30 +524,30 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
   if (settings.showMap) {
     const mx = margin, my = boxTop;
     ctx.save();
-    roundedRectPath(ctx, mx, my, mapSize, mapSize, 18 * scale);
+    roundedRectPath(ctx, mx, my, mapW, mapSize, 18 * scale);
     ctx.clip();
     if (mapImg) {
-      const s = mapSize;
-      ctx.drawImage(mapImg, mapPx - s / 2, mapPy - s / 2, s, s, mx, my, mapSize, mapSize);
+      const sw = mapW, sh = mapSize;
+      ctx.drawImage(mapImg, mapPx - sw / 2, mapPy - sh / 2, sw, sh, mx, my, mapW, mapSize);
     } else {
       ctx.fillStyle = '#274b6d';
-      ctx.fillRect(mx, my, mapSize, mapSize);
+      ctx.fillRect(mx, my, mapW, mapSize);
       ctx.strokeStyle = 'rgba(255,255,255,.25)';
       ctx.lineWidth = 1;
       for (let i = 1; i < 3; i++) {
-        ctx.beginPath(); ctx.moveTo(mx, my + (mapSize / 3) * i); ctx.lineTo(mx + mapSize, my + (mapSize / 3) * i); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(mx + (mapSize / 3) * i, my); ctx.lineTo(mx + (mapSize / 3) * i, my + mapSize); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(mx, my + (mapSize / 3) * i); ctx.lineTo(mx + mapW, my + (mapSize / 3) * i); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(mx + (mapW / 3) * i, my); ctx.lineTo(mx + (mapW / 3) * i, my + mapSize); ctx.stroke();
       }
     }
     // pin
     ctx.fillStyle = '#ef4444';
     ctx.beginPath();
-    ctx.arc(mx + mapSize / 2, my + mapSize / 2 - 10 * scale, 13 * scale, 0, Math.PI * 2);
+    ctx.arc(mx + mapW / 2, my + mapSize / 2 - 10 * scale, 13 * scale, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5 * scale; ctx.stroke();
     drawMapBrand(ctx, mx + 8 * scale, my + mapSize - 10 * scale, scale);
     ctx.restore();
-    textX = mx + mapSize + gap;
+    textX = mx + mapW + gap;
   }
 
   // ---- text card (own rounded, 70%-opacity background) ----
@@ -569,7 +563,21 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
   ctx.fillStyle = textColor;
   ctx.textBaseline = 'top';
   const innerX = boxX + boxPad;
-  let y = boxTop + boxPad;
+
+  // The box height is now a fixed 25% of the photo — vertically center the
+  // text block inside it (rather than always hugging the top), so a short
+  // address doesn't leave a slab of empty space at the bottom of the card.
+  let estLines = 0;
+  if (settings.showAddress) estLines += 1.4;
+  if (settings.showAddress && settings.showFlag && geoState.flag) estLines += 0.75;
+  if (settings.showAddress) estLines += 1;
+  if (settings.showCoords) estLines += 1;
+  if (settings.showExtra && formatExtra()) estLines += 0.85;
+  if (settings.showDatetime) estLines += 1;
+  if (settings.customText) estLines += 0.85;
+  const estContentH = estLines * lineGap;
+  const availH = boxH - boxPad * 2;
+  let y = boxTop + boxPad + Math.max(0, (availH - estContentH) / 2);
 
   if (settings.showAddress) {
     ctx.font = `800 ${32 * scale}px sans-serif`;
