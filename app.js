@@ -10,7 +10,7 @@
 // Shown in Settings. If this number doesn't match the latest build you
 // uploaded, your phone is still running an older cached copy of app.js —
 // which looks exactly like "the fix didn't work".
-const APP_BUILD = 6;
+const APP_BUILD = 7;
 const $ = (id) => document.getElementById(id);
 let toastTimer = null;
 function toast(msg, ms = 2200) {
@@ -46,6 +46,7 @@ const DEFAULT_SETTINGS = {
   marginPx: 30,     // gap from the photo's left/right/bottom edges, at a 900px-wide-equivalent baseline
   sizeScale: 1.1,    // multiplier on top of that for the map/box/font sizing (1 = 100%)
   photoOrientation: 'auto', // 'auto' | 'portrait' | 'landscape' — manual override for the saved photo's shape
+  photoRotation: '0',       // '0' | '90' | '180' | '270' — turns the scene upright if the phone hands it over sideways
 };
 
 function loadSettings() {
@@ -82,6 +83,7 @@ function applySettingsToForm() {
   $('opt-size-scale').value = Math.round(settings.sizeScale * 100);
   $('size-value').textContent = `${Math.round(settings.sizeScale * 100)}%`;
   $('opt-photo-orientation').value = settings.photoOrientation || 'auto';
+  $('opt-photo-rotation').value = settings.photoRotation || '0';
   updateDiagnostics();
 }
 
@@ -136,6 +138,7 @@ function updateDiagnostics() {
     `viewport       : ${window.innerWidth} x ${window.innerHeight}  (${window.innerWidth > window.innerHeight ? 'landscape' : 'portrait'})`,
     `preview box    : ${Math.round(box.width)} x ${Math.round(box.height)}  (${box.width > box.height ? 'landscape' : 'portrait'})`,
     `orientation set: ${settings.photoOrientation || 'auto'}`,
+    `scene rotation : ${settings.photoRotation || '0'}°`,
     `=> photo will be: ${wantLandscapePhoto() ? 'LANDSCAPE' : 'PORTRAIT'}`,
   ];
   el.textContent = rows.join('\n');
@@ -192,6 +195,11 @@ function bindSettingsForm() {
   });
   $('opt-photo-orientation').addEventListener('change', (e) => {
     settings.photoOrientation = e.target.value;
+    saveSettings();
+    updateDiagnostics();
+  });
+  $('opt-photo-rotation').addEventListener('change', (e) => {
+    settings.photoRotation = e.target.value;
     saveSettings();
     updateDiagnostics();
   });
@@ -801,9 +809,34 @@ async function capturePhoto() {
   // honestly), then crop the raw buffer to fit — the same centre-crop the
   // live preview is already doing visually via `object-fit: cover`.
   const rawW = video.videoWidth, rawH = video.videoHeight;
-  const rawAspect = rawW / rawH;
-  const longEdge = Math.max(rawW, rawH), shortEdge = Math.min(rawW, rawH);
   const wantLandscape = wantLandscapePhoto();
+
+  // Step 1 — put the scene upright FIRST, in its own buffer. If the phone
+  // handed us a frame whose content is turned on its side, rotating here
+  // (rather than trying to compensate later) means everything downstream —
+  // the crop AND the stamp — works on an already-correct picture. Rotation
+  // is 0 by default; the Settings override exists for phones that hand over
+  // a sideways frame, which no web API reliably reports.
+  const rot = ((parseInt(settings.photoRotation, 10) || 0) % 360 + 360) % 360;
+  const swap = (rot === 90 || rot === 270);
+  const effW = swap ? rawH : rawW;      // scene dimensions once it's upright
+  const effH = swap ? rawW : rawH;
+
+  const upright = document.createElement('canvas');
+  upright.width = effW; upright.height = effH;
+  const uctx = upright.getContext('2d');
+  uctx.save();
+  if (rot === 90)       { uctx.translate(effW, 0);      uctx.rotate(Math.PI / 2); }
+  else if (rot === 180) { uctx.translate(effW, effH);   uctx.rotate(Math.PI); }
+  else if (rot === 270) { uctx.translate(0, effH);      uctx.rotate(-Math.PI / 2); }
+  if (currentFacing === 'user') { uctx.translate(rawW, 0); uctx.scale(-1, 1); }  // mirror selfies
+  uctx.drawImage(video, 0, 0, rawW, rawH);
+  uctx.restore();
+
+  // Step 2 — decide the output shape, then centre-crop the upright scene to
+  // it (the same "cover" crop the live preview does visually).
+  const longEdge = Math.max(effW, effH), shortEdge = Math.min(effW, effH);
+  const effAspect = effW / effH;
 
   // Prefer the preview box's exact aspect (so the photo matches what you
   // framed), but only when it agrees with the orientation we resolved —
@@ -816,13 +849,13 @@ async function capturePhoto() {
     outAspect = wantLandscape ? (longEdge / shortEdge) : (shortEdge / longEdge);
   }
 
-  let sx = 0, sy = 0, sw = rawW, sh = rawH;
-  if (rawAspect > outAspect) {
-    sw = rawH * outAspect;       // raw buffer is relatively wider than we want -> crop its left/right sides
-    sx = (rawW - sw) / 2;
+  let sx = 0, sy = 0, sw = effW, sh = effH;
+  if (effAspect > outAspect) {
+    sw = effH * outAspect;       // scene is relatively wider than we want -> crop its left/right sides
+    sx = (effW - sw) / 2;
   } else {
-    sh = rawW / outAspect;       // raw buffer is relatively taller than we want -> crop its top/bottom
-    sy = (rawH - sh) / 2;
+    sh = effW / outAspect;       // scene is relatively taller than we want -> crop its top/bottom
+    sy = (effH - sh) / 2;
   }
 
   // Keep the exported resolution close to the sensor's native pixel count
@@ -835,16 +868,11 @@ async function capturePhoto() {
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
 
-  const drawFrame = () => {
-    // mirror front camera for a natural-looking result
-    if (currentFacing === 'user') {
-      ctx.translate(W, 0); ctx.scale(-1, 1);
-      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-    } else {
-      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
-    }
-  };
+  // Step 3 — the scene is upright and correctly shaped, so the stamp is
+  // always drawn flat along the bottom, never rotated. Portrait shot -> tall
+  // photo, upright scene, horizontal stamp. Landscape shot -> wide photo,
+  // upright scene, horizontal stamp. Same rules either way.
+  const drawFrame = () => ctx.drawImage(upright, sx, sy, sw, sh, 0, 0, W, H);
   drawFrame();
 
   let mapImg = null, mapPx = 0, mapPy = 0;
