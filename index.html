@@ -45,6 +45,8 @@
         <span id="gps-dot" class="dot"></span>
         <span id="gps-text">Searching GPS…</span>
       </div>
+
+      <div id="orient-badge" class="orient-badge">▯ Portrait</div>
     </div>
 
     <!-- top bar -->
@@ -165,12 +167,13 @@
       <div class="field-group">
         <label>Scene rotation fix</label>
         <select id="opt-photo-rotation">
-          <option value="0" selected>None (photo already upright)</option>
+          <option value="auto" selected>Auto (use the motion sensor)</option>
+          <option value="0">None (photo already upright)</option>
           <option value="90">Rotate 90° right</option>
           <option value="180">Rotate 180°</option>
           <option value="270">Rotate 90° left</option>
         </select>
-        <p class="attribution">Only needed if the photo itself comes out sideways. This turns the picture upright — the GeoCam text always stays flat along the bottom either way.</p>
+        <p class="attribution">Auto reads the phone's motion sensor, which knows how you're holding the phone even when Android's auto-rotate is switched off. Only pick a fixed angle if Auto still gets it wrong. The GeoCam text always stays flat along the bottom either way.</p>
       </div>
 
       <div class="field-group">

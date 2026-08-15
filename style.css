@@ -40,6 +40,16 @@ html, body {
 .dot.locked { background: #22c55e; }
 .dot.error { background: #ef4444; }
 
+/* Live "what shape will this photo be" indicator, so it's visible BEFORE
+   you press the shutter rather than a surprise afterwards. */
+.orient-badge {
+  position: absolute; top: 106px; right: 14px; z-index: 5;
+  background: rgba(15,23,42,.65); border: 1px solid rgba(255,255,255,.12);
+  padding: 6px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
+  letter-spacing: .2px;
+}
+.orient-badge.landscape { background: rgba(37,99,235,.8); border-color: rgba(255,255,255,.3); }
+
 .grid-overlay {
   position: absolute; inset: 0; pointer-events: none; z-index: 3;
   background-image:

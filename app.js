@@ -10,7 +10,7 @@
 // Shown in Settings. If this number doesn't match the latest build you
 // uploaded, your phone is still running an older cached copy of app.js —
 // which looks exactly like "the fix didn't work".
-const APP_BUILD = 7;
+const APP_BUILD = 8;
 const $ = (id) => document.getElementById(id);
 let toastTimer = null;
 function toast(msg, ms = 2200) {
@@ -46,7 +46,7 @@ const DEFAULT_SETTINGS = {
   marginPx: 30,     // gap from the photo's left/right/bottom edges, at a 900px-wide-equivalent baseline
   sizeScale: 1.1,    // multiplier on top of that for the map/box/font sizing (1 = 100%)
   photoOrientation: 'auto', // 'auto' | 'portrait' | 'landscape' — manual override for the saved photo's shape
-  photoRotation: '0',       // '0' | '90' | '180' | '270' — turns the scene upright if the phone hands it over sideways
+  photoRotation: 'auto',    // 'auto' | '0' | '90' | '180' | '270' — turns the scene upright if the phone hands it over sideways
 };
 
 function loadSettings() {
@@ -83,7 +83,7 @@ function applySettingsToForm() {
   $('opt-size-scale').value = Math.round(settings.sizeScale * 100);
   $('size-value').textContent = `${Math.round(settings.sizeScale * 100)}%`;
   $('opt-photo-orientation').value = settings.photoOrientation || 'auto';
-  $('opt-photo-rotation').value = settings.photoRotation || '0';
+  $('opt-photo-rotation').value = settings.photoRotation || 'auto';
   updateDiagnostics();
 }
 
@@ -108,21 +108,89 @@ function getScreenAngle() {
   return null;
 }
 
+/* ---- the accelerometer: the one signal that tells the truth ----
+   When the phone's auto-rotate is switched OFF, the browser is never told
+   the phone turned: screen.orientation.angle stays 0, the viewport never
+   reshapes, and the camera keeps handing over frames in the phone's own
+   portrait frame of reference — so the scene inside them lies on its side.
+   Every earlier fix asked the browser and the browser genuinely did not
+   know. The accelerometer does, because gravity doesn't care about a
+   software rotation lock. accelerationIncludingGravity points UP in the
+   real world (it reads +9.81 on the axis facing the sky), so whichever
+   device axis it lines up with tells us how the phone is being held. */
+let tiltAngle = null;          // 0 | 90 | 180 | 270  (physical rotation of the phone)
+let lastAccel = null;          // kept for the Diagnostics readout
+const TILT_MARGIN = 2.5;       // m/s^2 hysteresis so a near-45° hold doesn't flip-flop
+
+function handleMotion(e) {
+  const ag = e.accelerationIncludingGravity;
+  if (!ag || (ag.x === null && ag.y === null)) return;
+  const x = ag.x || 0, y = ag.y || 0;
+  lastAccel = { x, y, z: ag.z || 0 };
+
+  // Device axes: +x points right along the screen, +y points to the top of
+  // the screen. The reading points skyward, so:
+  //   y ~ +9.8  -> screen-top is up      -> held upright (portrait)
+  //   y ~ -9.8  -> screen-top is down    -> upside down
+  //   x ~ -9.8  -> screen-right is down  -> phone turned CLOCKWISE
+  //   x ~ +9.8  -> screen-right is up    -> phone turned ANTI-CLOCKWISE
+  if (Math.abs(x) > Math.abs(y) + TILT_MARGIN) {
+    tiltAngle = x < 0 ? 90 : 270;
+  } else if (Math.abs(y) > Math.abs(x) + TILT_MARGIN) {
+    tiltAngle = y > 0 ? 0 : 180;
+  }
+  // otherwise: too close to 45° to call — keep the previous stable value
+}
+
+function startTiltSensing() {
+  if (typeof DeviceMotionEvent === 'undefined') return;
+  // iOS requires an explicit permission prompt from a user gesture; Android
+  // does not. Either way, failure just leaves tiltAngle null and we fall
+  // back to the browser's own (possibly wrong) idea of the orientation.
+  const attach = () => window.addEventListener('devicemotion', handleMotion);
+  if (typeof DeviceMotionEvent.requestPermission === 'function') {
+    DeviceMotionEvent.requestPermission().then((res) => { if (res === 'granted') attach(); }).catch(() => {});
+  } else {
+    attach();
+  }
+}
+
+// How far the phone is physically turned BEYOND what the browser already
+// knows about. If auto-rotate is on, the browser has already rotated both
+// the viewport and the camera frame, so this is 0 and we add no rotation of
+// our own (rotating again would double-correct). If auto-rotate is off, the
+// browser's angle is stuck at 0 while the phone really is at 90°, so this
+// returns 90 — exactly the correction the picture needs.
+function rotationCorrection() {
+  if (tiltAngle === null) return 0;
+  const known = getScreenAngle();
+  const browserAngle = known === null ? 0 : ((known % 360) + 360) % 360;
+  return ((tiltAngle - browserAngle) % 360 + 360) % 360;
+}
+
+// The phone's true physical orientation, preferring the accelerometer and
+// falling back to the browser only when no motion sensor is available.
+function physicalAngle() {
+  if (tiltAngle !== null) return tiltAngle;
+  const a = getScreenAngle();
+  if (a !== null) return ((a % 360) + 360) % 360;
+  return window.innerWidth > window.innerHeight ? 90 : 0;
+}
+
 // true = the saved photo should be landscape-shaped, false = portrait-shaped.
 function wantLandscapePhoto() {
   const mode = settings.photoOrientation || 'auto';
   if (mode === 'landscape') return true;
   if (mode === 'portrait') return false;
+  const a = physicalAngle();
+  return a === 90 || a === 270;
+}
 
-  const angle = getScreenAngle();
-  if (angle !== null) {
-    const a = ((angle % 360) + 360) % 360;
-    if (a === 90 || a === 270) return true;
-    if (a === 0 || a === 180) return false;
-  }
-  const box = $('video').getBoundingClientRect();
-  if (box.width > 0 && box.height > 0) return box.width > box.height;
-  return window.innerWidth > window.innerHeight;
+// The rotation actually applied to the captured frame.
+function effectiveRotation() {
+  const mode = settings.photoRotation || 'auto';
+  if (mode !== 'auto') return ((parseInt(mode, 10) || 0) % 360 + 360) % 360;
+  return rotationCorrection();
 }
 
 function updateDiagnostics() {
@@ -131,17 +199,33 @@ function updateDiagnostics() {
   const v = $('video');
   const box = v.getBoundingClientRect();
   const angle = getScreenAngle();
+  const acc = lastAccel
+    ? `x ${lastAccel.x.toFixed(1)}  y ${lastAccel.y.toFixed(1)}  z ${lastAccel.z.toFixed(1)}`
+    : 'no motion sensor data yet';
   const rows = [
     `build          : v${APP_BUILD}`,
     `camera buffer  : ${v.videoWidth || 0} x ${v.videoHeight || 0}  (${(v.videoWidth || 0) >= (v.videoHeight || 0) ? 'landscape' : 'portrait'})`,
-    `screen angle   : ${angle === null ? 'unavailable' : angle + '°'}`,
-    `viewport       : ${window.innerWidth} x ${window.innerHeight}  (${window.innerWidth > window.innerHeight ? 'landscape' : 'portrait'})`,
-    `preview box    : ${Math.round(box.width)} x ${Math.round(box.height)}  (${box.width > box.height ? 'landscape' : 'portrait'})`,
+    `screen angle   : ${angle === null ? 'unavailable' : angle + '°'}${angle === 0 && (tiltAngle === 90 || tiltAngle === 270) ? '  <- stuck (auto-rotate off)' : ''}`,
+    `accelerometer  : ${acc}`,
+    `phone is held  : ${tiltAngle === null ? 'unknown' : tiltAngle + '°'} ${tiltAngle === 90 || tiltAngle === 270 ? '(LANDSCAPE)' : tiltAngle === null ? '' : '(PORTRAIT)'}`,
+    `viewport       : ${window.innerWidth} x ${window.innerHeight}`,
+    `preview box    : ${Math.round(box.width)} x ${Math.round(box.height)}`,
     `orientation set: ${settings.photoOrientation || 'auto'}`,
-    `scene rotation : ${settings.photoRotation || '0'}°`,
+    `rotation set   : ${settings.photoRotation || 'auto'}`,
+    `=> will rotate  : ${effectiveRotation()}°`,
     `=> photo will be: ${wantLandscapePhoto() ? 'LANDSCAPE' : 'PORTRAIT'}`,
   ];
   el.textContent = rows.join('\n');
+}
+
+// Live badge on the camera screen so you can SEE what the next shot will be
+// before you take it, instead of finding out afterwards.
+function updateOrientationBadge() {
+  const el = $('orient-badge');
+  if (!el) return;
+  const land = wantLandscapePhoto();
+  el.textContent = land ? '▭ Landscape' : '▯ Portrait';
+  el.classList.toggle('landscape', land);
 }
 
 function bindSettingsForm() {
@@ -440,6 +524,7 @@ function updateLiveStamp() {
   // a blank/"Locating…" stamp, or a stale rotated frame, into a photo.
   $('btn-capture').classList.toggle('waiting', geoState.lat === null || cameraSettling);
   updateDiagnostics();
+  updateOrientationBadge();
 }
 setInterval(updateLiveStamp, 1000);
 
@@ -817,7 +902,7 @@ async function capturePhoto() {
   // the crop AND the stamp — works on an already-correct picture. Rotation
   // is 0 by default; the Settings override exists for phones that hand over
   // a sideways frame, which no web API reliably reports.
-  const rot = ((parseInt(settings.photoRotation, 10) || 0) % 360 + 360) % 360;
+  const rot = effectiveRotation();
   const swap = (rot === 90 || rot === 270);
   const effW = swap ? rawH : rawW;      // scene dimensions once it's upright
   const effH = swap ? rawW : rawH;
@@ -1000,6 +1085,7 @@ function bindEvents() {
   $('btn-start').addEventListener('click', async () => {
     await startCamera();
     startGeolocation();
+    startTiltSensing();   // iOS only grants motion access from a user gesture
   });
   $('btn-flip').addEventListener('click', () => startCamera(currentFacing === 'environment' ? 'user' : 'environment'));
   $('btn-capture').addEventListener('click', capturePhoto);
@@ -1049,6 +1135,8 @@ async function init() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('service-worker.js').catch(() => {});
   }
+
+  startTiltSensing();
 
   // Try to auto-start; browsers that need a user gesture will fall back to the button.
   try {
