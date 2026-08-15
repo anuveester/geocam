@@ -406,11 +406,26 @@ function tileUrlForPoint(lat, lon, style, zoom) {
 let mediaStream = null;
 let currentFacing = 'environment';
 
+// The app used to be orientation-locked to portrait (manifest.json), which
+// pinned the screen so it never rotated even when you physically turned the
+// phone sideways — the camera sensor rotated with your hand, but the video
+// stream we asked for (and the screen showing it) didn't, so a "landscape"
+// shot came out portrait-shaped with the scene rotated inside it. The app
+// is no longer orientation-locked, so we now ask for stream dimensions that
+// match however the phone is currently held, matching what portrait capture
+// already did correctly.
+function idealCameraDims() {
+  const landscape = window.innerWidth > window.innerHeight;
+  return landscape
+    ? { width: { ideal: 1920 }, height: { ideal: 1080 } }
+    : { width: { ideal: 1080 }, height: { ideal: 1920 } };
+}
+
 async function startCamera(facing = currentFacing) {
   stopCamera();
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      video: { facingMode: { ideal: facing }, ...idealCameraDims() },
       audio: false,
     });
     $('video').srcObject = mediaStream;
@@ -427,6 +442,23 @@ function stopCamera() {
     mediaStream = null;
   }
 }
+
+// A camera stream's resolution is fixed at the moment it's opened — turning
+// the phone after that doesn't make the browser renegotiate it on its own.
+// So after a rotation, restart the stream (once things settle) so the new
+// video.videoWidth/videoHeight — and therefore the captured photo — actually
+// match the orientation you're holding the phone in when you tap capture.
+let orientationRestartTimer = null;
+function handleOrientationChange() {
+  if (!mediaStream) return;
+  clearTimeout(orientationRestartTimer);
+  orientationRestartTimer = setTimeout(() => {
+    const cam = $('camera-screen');
+    if (cam && cam.classList.contains('active')) startCamera(currentFacing);
+  }, 400);
+}
+window.addEventListener('orientationchange', handleOrientationChange);
+window.addEventListener('resize', handleOrientationChange);
 
 /* --------------------------------- capture ---------------------------------- */
 let lastCaptureDataUrl = null;
