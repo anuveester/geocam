@@ -442,17 +442,30 @@ function drawMapBrand(ctx, x, y, scale) {
   ctx.restore();
 }
 
-function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
-  // Size everything relative to the actual photo width so the stamp reads
-  // clearly regardless of the camera's capture resolution — the map
-  // thumbnail lands around ~20% of the photo width, matching a typical
-  // geotag-camera stamp.
-  const scale = W / 900;
-  const pad = 30 * scale;
-  const mapSize = 190 * scale;
-  const lineGap = 42 * scale;
+// Traces a rounded-rectangle path (does not fill/stroke/clip — caller decides).
+function roundedRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
 
-  // work out how many text lines will actually render, so the bar height fits
+function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
+  // Floating-card layout: a separate rounded map thumbnail bottom-left and a
+  // separate translucent rounded text card to its right, both held off the
+  // photo edges by a fixed margin — matching a typical geotag-camera stamp,
+  // rather than a full-width bar. Sizing scales with photo width so it reads
+  // clearly regardless of the camera's capture resolution.
+  const scale = W / 900;
+  const margin = 50 * scale;   // gap from the left/right/bottom edges of the photo
+  const gap = 18 * scale;      // gap between the map thumbnail and the text card
+  const boxPad = 24 * scale;   // inner padding of the text card
+  const lineGap = 40 * scale;
+
+  // work out how many text lines will actually render, so the card height fits
   let lines = 0;
   if (settings.showAddress) lines += 1.4; // title (can wrap)
   if (settings.showAddress && settings.showFlag && geoState.flag) lines += 0.75;
@@ -461,45 +474,30 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
   if (settings.showExtra && formatExtra()) lines += 0.85;
   if (settings.showDatetime) lines += 1;
   if (settings.customText) lines += 0.85;
-  const contentH = Math.max(lines * lineGap, settings.showMap ? mapSize : 40 * scale);
-  const badgeH = settings.showBadge ? 40 * scale : 0;
-  const barH = contentH + pad * 1.3 + badgeH;
+  const textContentH = Math.max(lines * lineGap, 50 * scale);
+  const boxH = textContentH + boxPad * 2;
+  const mapSize = boxH; // map thumbnail matches the text card's height
+
+  const bottom = H - margin;
+  const boxTop = bottom - boxH;
 
   ctx.save();
-  if (settings.theme !== 'minimal') {
-    const grad = ctx.createLinearGradient(0, H - barH, 0, H);
-    if (settings.theme === 'light') {
-      grad.addColorStop(0, 'rgba(255,255,255,0)');
-      grad.addColorStop(1, 'rgba(255,255,255,0.9)');
-    } else {
-      grad.addColorStop(0, 'rgba(0,0,0,0)');
-      grad.addColorStop(1, 'rgba(0,0,0,0.76)');
-    }
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, H - barH, W, barH);
-  }
-
   const textColor = settings.theme === 'light' ? '#0f172a' : '#ffffff';
-  const contentTop = H - barH + pad * 0.7 + badgeH;
+  const cardFill = settings.theme === 'minimal'
+    ? 'rgba(0,0,0,0)'
+    : settings.theme === 'light' ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.7)';
 
-  // ---- badge (top-right, "📍 GeoCam") ----
+  // ---- badge, floats above the card, right-aligned ----
   if (settings.showBadge) {
     const badgeText = 'GeoCam';
     ctx.font = `700 ${17 * scale}px sans-serif`;
     const tw = ctx.measureText(badgeText).width;
     const bw = tw + 48 * scale, bh = 32 * scale;
-    const bx = W - pad - bw, by = H - barH + pad * 0.55;
-    ctx.fillStyle = 'rgba(255,255,255,.16)';
-    const r = bh / 2;
-    ctx.beginPath();
-    ctx.moveTo(bx + r, by);
-    ctx.arcTo(bx + bw, by, bx + bw, by + bh, r);
-    ctx.arcTo(bx + bw, by + bh, bx, by + bh, r);
-    ctx.arcTo(bx, by + bh, bx, by, r);
-    ctx.arcTo(bx, by, bx + bw, by, r);
-    ctx.closePath();
+    const bx = W - margin - bw, by = boxTop - 14 * scale - bh;
+    roundedRectPath(ctx, bx, by, bw, bh, bh / 2);
+    ctx.fillStyle = cardFill;
     ctx.fill();
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = textColor;
     ctx.font = `${18 * scale}px sans-serif`;
     ctx.textBaseline = 'middle';
     ctx.fillText('📍', bx + 11 * scale, by + bh / 2 + 1);
@@ -507,19 +505,12 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
     ctx.fillText(badgeText, bx + 31 * scale, by + bh / 2 + 1);
   }
 
-  let textX = pad;
-  const mapTop = contentTop + (contentH - mapSize) / 2;
+  // ---- map thumbnail (own rounded card, bottom-left) ----
+  let textX = margin;
   if (settings.showMap) {
-    const mx = pad, my = Math.max(contentTop, mapTop);
+    const mx = margin, my = boxTop;
     ctx.save();
-    ctx.beginPath();
-    const r = 16 * scale;
-    ctx.moveTo(mx + r, my);
-    ctx.arcTo(mx + mapSize, my, mx + mapSize, my + mapSize, r);
-    ctx.arcTo(mx + mapSize, my + mapSize, mx, my + mapSize, r);
-    ctx.arcTo(mx, my + mapSize, mx, my, r);
-    ctx.arcTo(mx, my, mx + mapSize, my, r);
-    ctx.closePath();
+    roundedRectPath(ctx, mx, my, mapSize, mapSize, 18 * scale);
     ctx.clip();
     if (mapImg) {
       const s = mapSize;
@@ -542,36 +533,61 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5 * scale; ctx.stroke();
     drawMapBrand(ctx, mx + 8 * scale, my + mapSize - 10 * scale, scale);
     ctx.restore();
-    textX = mx + mapSize + pad * 0.8;
+    textX = mx + mapSize + gap;
   }
 
+  // ---- text card (own rounded, 70%-opacity background) ----
+  const boxX = textX;
+  const boxW = (W - margin) - boxX;
+  roundedRectPath(ctx, boxX, boxTop, boxW, boxH, 18 * scale);
+  ctx.fillStyle = cardFill;
+  ctx.fill();
+
+  ctx.save();
+  roundedRectPath(ctx, boxX, boxTop, boxW, boxH, 18 * scale);
+  ctx.clip();
   ctx.fillStyle = textColor;
   ctx.textBaseline = 'top';
-  let y = contentTop;
+  const innerX = boxX + boxPad;
+  let y = boxTop + boxPad;
 
   if (settings.showAddress) {
-    ctx.font = `800 ${34 * scale}px sans-serif`;
-    const wrapped = wrapText(ctx, resolvedTitle(), textX, y, W - textX - pad, lineGap);
+    ctx.font = `800 ${32 * scale}px sans-serif`;
+    const wrapped = wrapText(ctx, resolvedTitle(), innerX, y, boxW - boxPad * 2, lineGap);
     y += lineGap * wrapped;
     if (settings.showFlag && geoState.flag) {
-      ctx.font = `${26 * scale}px sans-serif`;
-      ctx.fillText(geoState.flag, textX, y);
+      ctx.font = `${24 * scale}px sans-serif`;
+      ctx.fillText(geoState.flag, innerX, y);
       y += lineGap * 0.8;
     }
   }
-  ctx.font = `500 ${25 * scale}px sans-serif`;
+  const innerMaxW = boxW - boxPad * 2;
+  ctx.font = `500 ${23 * scale}px sans-serif`;
   if (settings.showAddress) {
     const plusPrefix = settings.showPlusCode && geoState.plusCode ? `${geoState.plusCode}, ` : '';
-    ctx.fillText(plusPrefix + resolvedAddrLine(), textX, y);
+    fillTextEllipsis(ctx, plusPrefix + resolvedAddrLine(), innerX, y, innerMaxW);
     y += lineGap * 0.85;
   }
-  if (settings.showCoords) { ctx.fillText(formatCoords(), textX, y); y += lineGap * 0.85; }
-  if (settings.showExtra && formatExtra()) { ctx.font = `400 ${21 * scale}px sans-serif`; ctx.fillText(formatExtra(), textX, y); y += lineGap * 0.8; }
-  ctx.font = `500 ${25 * scale}px sans-serif`;
-  if (settings.showDatetime) { ctx.fillText(formatDatetime(new Date()), textX, y); y += lineGap * 0.85; }
-  if (settings.customText) { ctx.font = `italic 400 ${21 * scale}px sans-serif`; ctx.fillText(settings.customText, textX, y); }
+  if (settings.showCoords) { fillTextEllipsis(ctx, formatCoords(), innerX, y, innerMaxW); y += lineGap * 0.85; }
+  if (settings.showExtra && formatExtra()) { ctx.font = `400 ${19 * scale}px sans-serif`; fillTextEllipsis(ctx, formatExtra(), innerX, y, innerMaxW); y += lineGap * 0.8; }
+  ctx.font = `500 ${23 * scale}px sans-serif`;
+  if (settings.showDatetime) { fillTextEllipsis(ctx, formatDatetime(new Date()), innerX, y, innerMaxW); y += lineGap * 0.85; }
+  if (settings.customText) { ctx.font = `italic 400 ${19 * scale}px sans-serif`; fillTextEllipsis(ctx, settings.customText, innerX, y, innerMaxW); }
+  ctx.restore();
 
   ctx.restore();
+}
+// Draws text on one line, shortening it with an ellipsis if it's wider than maxWidth
+// (used for lines we deliberately keep single-line, unlike the wrapped title).
+function fillTextEllipsis(ctx, text, x, y, maxWidth) {
+  text = String(text || '');
+  if (ctx.measureText(text).width <= maxWidth) { ctx.fillText(text, x, y); return; }
+  let lo = 0, hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (ctx.measureText(text.slice(0, mid) + '…').width <= maxWidth) lo = mid; else hi = mid - 1;
+  }
+  ctx.fillText(text.slice(0, lo).trimEnd() + '…', x, y);
 }
 // Wraps text to at most 2 lines, drawing it and returning how many lines were used.
 function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
