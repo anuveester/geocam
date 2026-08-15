@@ -722,17 +722,54 @@ async function capturePhoto() {
     toast('Still finding your GPS location — move near a window or outdoors and try again', 3200);
     return;
   }
+  // Some phones always hand the browser a landscape-shaped sensor buffer
+  // (e.g. 1920x1080) no matter how you're holding it, and only rotate the
+  // *content* upright internally — the frame's own shape never becomes
+  // portrait. Trusting video.videoWidth/videoHeight directly is why every
+  // capture was coming out landscape even when you shot in portrait.
+  // What's reliable is the on-screen video box: it's rendered with
+  // `object-fit: cover`, and its CSS size genuinely follows the phone's
+  // physical orientation (that's what you're framing the shot with). So we
+  // export at THAT aspect ratio — cropping the raw buffer the same way
+  // `cover` already crops it for the live preview — instead of the raw
+  // buffer's own shape. Portrait hold -> tall box -> portrait photo.
+  // Landscape hold -> wide box -> landscape photo. Matches what you saw.
+  const rawW = video.videoWidth, rawH = video.videoHeight;
+  const box = video.getBoundingClientRect();
+  const boxAspect = (box.width > 0 && box.height > 0) ? (box.width / box.height) : (rawW / rawH);
+  const rawAspect = rawW / rawH;
+
+  let sx = 0, sy = 0, sw = rawW, sh = rawH;
+  if (rawAspect > boxAspect) {
+    sw = rawH * boxAspect;       // raw buffer is relatively wider than the box -> crop its left/right sides
+    sx = (rawW - sw) / 2;
+  } else {
+    sh = rawW / boxAspect;       // raw buffer is relatively taller than the box -> crop its top/bottom
+    sy = (rawH - sh) / 2;
+  }
+
+  // Keep the exported resolution close to the sensor's native pixel count
+  // rather than shrinking it down to the (much smaller) CSS box size.
+  const targetLongEdge = Math.max(rawW, rawH);
+  let W, H;
+  if (boxAspect >= 1) { W = targetLongEdge; H = Math.round(targetLongEdge / boxAspect); }
+  else { H = targetLongEdge; W = Math.round(targetLongEdge * boxAspect); }
+
   const canvas = $('hidden-canvas');
-  const W = video.videoWidth, H = video.videoHeight;
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
 
-  // mirror front camera for a natural-looking result
-  if (currentFacing === 'user') {
-    ctx.translate(W, 0); ctx.scale(-1, 1);
-  }
-  ctx.drawImage(video, 0, 0, W, H);
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const drawFrame = () => {
+    // mirror front camera for a natural-looking result
+    if (currentFacing === 'user') {
+      ctx.translate(W, 0); ctx.scale(-1, 1);
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    } else {
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+    }
+  };
+  drawFrame();
 
   let mapImg = null, mapPx = 0, mapPy = 0;
   if (settings.showMap && geoState.lat !== null) {
@@ -749,9 +786,7 @@ async function capturePhoto() {
   } catch (secErr) {
     // canvas got tainted by a non-CORS map tile — redraw without the map image
     ctx.clearRect(0, 0, W, H);
-    if (currentFacing === 'user') { ctx.translate(W, 0); ctx.scale(-1, 1); }
-    ctx.drawImage(video, 0, 0, W, H);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    drawFrame();
     drawStampBar(ctx, W, H, null, 0, 0);
     lastCaptureDataUrl = canvas.toDataURL('image/jpeg', quality);
   }
