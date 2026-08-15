@@ -177,12 +177,35 @@ let geoState = {
   addressAt: 0, watchId: null,
 };
 
+// If we have a GPS fix but reverse-geocoding hasn't finished yet (or failed),
+// fall back to showing the raw coordinates instead of leaving "Locating…" —
+// this is what gets baked into a photo if you capture the instant GPS locks,
+// before the address lookup has had time to return.
+function resolvedTitle() {
+  if (geoState.title && geoState.title !== 'Locating…' && geoState.title !== 'Address unavailable') {
+    return geoState.title;
+  }
+  if (geoState.lat !== null) return `${geoState.lat.toFixed(5)}, ${geoState.lon.toFixed(5)}`;
+  return 'Locating…';
+}
+function resolvedAddrLine() {
+  if (geoState.addrLine) return geoState.addrLine;
+  if (geoState.lat !== null) return 'Fetching address…';
+  return '';
+}
+
 function startGeolocation() {
   if (!('geolocation' in navigator)) {
     $('gps-text').textContent = 'GPS not supported';
     $('gps-dot').classList.add('error');
     return;
   }
+  // If it's taking a while, GPS most likely can't see enough sky (indoors,
+  // under cover, near tall buildings) — nudge the user rather than leave
+  // them guessing why the shutter is greyed out.
+  setTimeout(() => {
+    if (geoState.lat === null) $('gps-text').textContent = 'No fix yet — try near a window or outdoors';
+  }, 8000);
   geoState.watchId = navigator.geolocation.watchPosition(
     (pos) => {
       geoState.lat = pos.coords.latitude;
@@ -311,14 +334,18 @@ function updateLiveStamp() {
   $('stamp-badge-row').style.display = settings.showBadge ? '' : 'none';
   $('stamp-map-brand').textContent = settings.mapStyle === 'satellite' ? 'Esri' : 'OSM';
 
-  $('stamp-title').textContent = geoState.title;
+  $('stamp-title').textContent = resolvedTitle();
   $('stamp-flag').textContent = geoState.flag;
   const plusPrefix = settings.showPlusCode && geoState.plusCode ? `${geoState.plusCode}, ` : '';
-  $('stamp-address').textContent = plusPrefix + (geoState.addrLine || geoState.address);
+  $('stamp-address').textContent = plusPrefix + resolvedAddrLine();
   $('stamp-coords').textContent = formatCoords();
   $('stamp-extra').textContent = formatExtra();
   $('stamp-datetime').textContent = formatDatetime(new Date());
   $('stamp-logo').textContent = settings.customText;
+
+  // Grey out the shutter until we actually have a GPS fix, so you can't
+  // accidentally bake a blank/"Locating…" stamp into a photo.
+  $('btn-capture').classList.toggle('waiting', geoState.lat === null);
 }
 setInterval(updateLiveStamp, 1000);
 
@@ -524,7 +551,7 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
 
   if (settings.showAddress) {
     ctx.font = `800 ${34 * scale}px sans-serif`;
-    const wrapped = wrapText(ctx, geoState.title, textX, y, W - textX - pad, lineGap);
+    const wrapped = wrapText(ctx, resolvedTitle(), textX, y, W - textX - pad, lineGap);
     y += lineGap * wrapped;
     if (settings.showFlag && geoState.flag) {
       ctx.font = `${26 * scale}px sans-serif`;
@@ -535,7 +562,7 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
   ctx.font = `500 ${25 * scale}px sans-serif`;
   if (settings.showAddress) {
     const plusPrefix = settings.showPlusCode && geoState.plusCode ? `${geoState.plusCode}, ` : '';
-    ctx.fillText(plusPrefix + (geoState.addrLine || geoState.address), textX, y);
+    ctx.fillText(plusPrefix + resolvedAddrLine(), textX, y);
     y += lineGap * 0.85;
   }
   if (settings.showCoords) { ctx.fillText(formatCoords(), textX, y); y += lineGap * 0.85; }
@@ -568,6 +595,10 @@ function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
 async function capturePhoto() {
   const video = $('video');
   if (!video.videoWidth) { toast('Camera not ready yet'); return; }
+  if (geoState.lat === null) {
+    toast('Still finding your GPS location — move near a window or outdoors and try again', 3200);
+    return;
+  }
   const canvas = $('hidden-canvas');
   const W = video.videoWidth, H = video.videoHeight;
   canvas.width = W; canvas.height = H;

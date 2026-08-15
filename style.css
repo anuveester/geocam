@@ -99,6 +99,11 @@ html, body {
   cursor: pointer;
 }
 .shutter-btn:active { transform: scale(0.94); }
+.shutter-btn.waiting {
+  background: #94a3b8; border-color: rgba(255,255,255,.15);
+  animation: pulse-waiting 1.4s ease-in-out infinite;
+}
+@keyframes pulse-waiting { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .thumb-btn {
   width: 44px; height: 44px; border-radius: 10px;
   background: #1e293b center/cover no-repeat; border: 1.5px solid rgba(255,255,255,.3);
