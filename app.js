@@ -7,6 +7,10 @@
    ========================================================================== */
 
 /* ---------------------------- small utilities ---------------------------- */
+// Shown in Settings. If this number doesn't match the latest build you
+// uploaded, your phone is still running an older cached copy of app.js —
+// which looks exactly like "the fix didn't work".
+const APP_BUILD = 6;
 const $ = (id) => document.getElementById(id);
 let toastTimer = null;
 function toast(msg, ms = 2200) {
@@ -41,6 +45,7 @@ const DEFAULT_SETTINGS = {
   quality: '0.9',
   marginPx: 30,     // gap from the photo's left/right/bottom edges, at a 900px-wide-equivalent baseline
   sizeScale: 1.1,    // multiplier on top of that for the map/box/font sizing (1 = 100%)
+  photoOrientation: 'auto', // 'auto' | 'portrait' | 'landscape' — manual override for the saved photo's shape
 };
 
 function loadSettings() {
@@ -76,6 +81,64 @@ function applySettingsToForm() {
   $('margin-value').textContent = `${settings.marginPx}px`;
   $('opt-size-scale').value = Math.round(settings.sizeScale * 100);
   $('size-value').textContent = `${Math.round(settings.sizeScale * 100)}%`;
+  $('opt-photo-orientation').value = settings.photoOrientation || 'auto';
+  updateDiagnostics();
+}
+
+/* --------------------------- orientation plumbing --------------------------
+   Reading the phone's physical orientation from a web page is genuinely
+   unreliable, and different signals disagree on different devices:
+     - video.videoWidth/Height : on many phones ALWAYS landscape-shaped
+                                 (e.g. 1920x1080) regardless of how you hold
+                                 it; only the content is rotated internally.
+     - screen.orientation.angle: correct — but frozen at 0 if the phone's
+                                 auto-rotate/rotation-lock is switched off.
+     - the video element's CSS box: follows the browser viewport, which also
+                                 won't rotate when rotation lock is on.
+   So rather than trusting one of them blindly (which is what kept breaking),
+   we check them in order of reliability and expose a manual override for the
+   case where the phone simply refuses to report the truth. The Diagnostics
+   block in Settings prints all of these live so a mismatch is visible
+   instead of guessed at. -------------------------------------------------- */
+function getScreenAngle() {
+  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+  if (typeof window.orientation === 'number') return window.orientation;
+  return null;
+}
+
+// true = the saved photo should be landscape-shaped, false = portrait-shaped.
+function wantLandscapePhoto() {
+  const mode = settings.photoOrientation || 'auto';
+  if (mode === 'landscape') return true;
+  if (mode === 'portrait') return false;
+
+  const angle = getScreenAngle();
+  if (angle !== null) {
+    const a = ((angle % 360) + 360) % 360;
+    if (a === 90 || a === 270) return true;
+    if (a === 0 || a === 180) return false;
+  }
+  const box = $('video').getBoundingClientRect();
+  if (box.width > 0 && box.height > 0) return box.width > box.height;
+  return window.innerWidth > window.innerHeight;
+}
+
+function updateDiagnostics() {
+  const el = $('diag-readout');
+  if (!el) return;
+  const v = $('video');
+  const box = v.getBoundingClientRect();
+  const angle = getScreenAngle();
+  const rows = [
+    `build          : v${APP_BUILD}`,
+    `camera buffer  : ${v.videoWidth || 0} x ${v.videoHeight || 0}  (${(v.videoWidth || 0) >= (v.videoHeight || 0) ? 'landscape' : 'portrait'})`,
+    `screen angle   : ${angle === null ? 'unavailable' : angle + '°'}`,
+    `viewport       : ${window.innerWidth} x ${window.innerHeight}  (${window.innerWidth > window.innerHeight ? 'landscape' : 'portrait'})`,
+    `preview box    : ${Math.round(box.width)} x ${Math.round(box.height)}  (${box.width > box.height ? 'landscape' : 'portrait'})`,
+    `orientation set: ${settings.photoOrientation || 'auto'}`,
+    `=> photo will be: ${wantLandscapePhoto() ? 'LANDSCAPE' : 'PORTRAIT'}`,
+  ];
+  el.textContent = rows.join('\n');
 }
 
 function bindSettingsForm() {
@@ -126,6 +189,11 @@ function bindSettingsForm() {
     settings.sizeScale = parseInt(e.target.value, 10) / 100;
     $('size-value').textContent = `${e.target.value}%`;
     saveSettings();
+  });
+  $('opt-photo-orientation').addEventListener('change', (e) => {
+    settings.photoOrientation = e.target.value;
+    saveSettings();
+    updateDiagnostics();
   });
 }
 
@@ -363,6 +431,7 @@ function updateLiveStamp() {
   // camera is mid-restart after a rotation — so you can't accidentally bake
   // a blank/"Locating…" stamp, or a stale rotated frame, into a photo.
   $('btn-capture').classList.toggle('waiting', geoState.lat === null || cameraSettling);
+  updateDiagnostics();
 }
 setInterval(updateLiveStamp, 1000);
 
@@ -722,38 +791,45 @@ async function capturePhoto() {
     toast('Still finding your GPS location — move near a window or outdoors and try again', 3200);
     return;
   }
-  // Some phones always hand the browser a landscape-shaped sensor buffer
-  // (e.g. 1920x1080) no matter how you're holding it, and only rotate the
-  // *content* upright internally — the frame's own shape never becomes
-  // portrait. Trusting video.videoWidth/videoHeight directly is why every
-  // capture was coming out landscape even when you shot in portrait.
-  // What's reliable is the on-screen video box: it's rendered with
-  // `object-fit: cover`, and its CSS size genuinely follows the phone's
-  // physical orientation (that's what you're framing the shot with). So we
-  // export at THAT aspect ratio — cropping the raw buffer the same way
-  // `cover` already crops it for the live preview — instead of the raw
-  // buffer's own shape. Portrait hold -> tall box -> portrait photo.
-  // Landscape hold -> wide box -> landscape photo. Matches what you saw.
+  // Many phones always hand the browser a landscape-shaped sensor buffer
+  // (e.g. 1920x1080) no matter how you're holding it, rotating only the
+  // *content* internally — the frame's own shape never becomes portrait.
+  // That's why reading video.videoWidth/videoHeight produced a landscape
+  // photo every time. So we decide the output shape from the orientation
+  // signals resolved in wantLandscapePhoto() (screen angle, then the preview
+  // box, with a manual override in Settings for phones that report neither
+  // honestly), then crop the raw buffer to fit — the same centre-crop the
+  // live preview is already doing visually via `object-fit: cover`.
   const rawW = video.videoWidth, rawH = video.videoHeight;
-  const box = video.getBoundingClientRect();
-  const boxAspect = (box.width > 0 && box.height > 0) ? (box.width / box.height) : (rawW / rawH);
   const rawAspect = rawW / rawH;
+  const longEdge = Math.max(rawW, rawH), shortEdge = Math.min(rawW, rawH);
+  const wantLandscape = wantLandscapePhoto();
+
+  // Prefer the preview box's exact aspect (so the photo matches what you
+  // framed), but only when it agrees with the orientation we resolved —
+  // otherwise fall back to the sensor's own ratio, turned the right way up.
+  const box = video.getBoundingClientRect();
+  let outAspect;
+  if (box.width > 0 && box.height > 0 && (box.width > box.height) === wantLandscape) {
+    outAspect = box.width / box.height;
+  } else {
+    outAspect = wantLandscape ? (longEdge / shortEdge) : (shortEdge / longEdge);
+  }
 
   let sx = 0, sy = 0, sw = rawW, sh = rawH;
-  if (rawAspect > boxAspect) {
-    sw = rawH * boxAspect;       // raw buffer is relatively wider than the box -> crop its left/right sides
+  if (rawAspect > outAspect) {
+    sw = rawH * outAspect;       // raw buffer is relatively wider than we want -> crop its left/right sides
     sx = (rawW - sw) / 2;
   } else {
-    sh = rawW / boxAspect;       // raw buffer is relatively taller than the box -> crop its top/bottom
+    sh = rawW / outAspect;       // raw buffer is relatively taller than we want -> crop its top/bottom
     sy = (rawH - sh) / 2;
   }
 
   // Keep the exported resolution close to the sensor's native pixel count
   // rather than shrinking it down to the (much smaller) CSS box size.
-  const targetLongEdge = Math.max(rawW, rawH);
   let W, H;
-  if (boxAspect >= 1) { W = targetLongEdge; H = Math.round(targetLongEdge / boxAspect); }
-  else { H = targetLongEdge; W = Math.round(targetLongEdge * boxAspect); }
+  if (outAspect >= 1) { W = longEdge; H = Math.round(longEdge / outAspect); }
+  else { H = longEdge; W = Math.round(longEdge * outAspect); }
 
   const canvas = $('hidden-canvas');
   canvas.width = W; canvas.height = H;

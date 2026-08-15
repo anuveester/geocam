@@ -153,6 +153,22 @@
       </div>
 
       <div class="field-group">
+        <label>Saved photo orientation</label>
+        <select id="opt-photo-orientation">
+          <option value="auto" selected>Auto (follow how I hold the phone)</option>
+          <option value="portrait">Always portrait</option>
+          <option value="landscape">Always landscape</option>
+        </select>
+        <p class="attribution">If Auto keeps guessing wrong, your phone isn't reporting its rotation to the browser (this happens when auto-rotate / rotation lock is switched off in Android settings). Force the shape here instead.</p>
+      </div>
+
+      <div class="field-group">
+        <label>Diagnostics</label>
+        <pre id="diag-readout" class="diag">--</pre>
+        <p class="attribution">Live values from your phone. If "build" doesn't match the newest version, an old cached copy is still running.</p>
+      </div>
+
+      <div class="field-group">
         <label>Stamp margin from edges: <span id="margin-value">30px</span></label>
         <input type="range" id="opt-margin" min="10" max="100" step="5" value="30" />
       </div>

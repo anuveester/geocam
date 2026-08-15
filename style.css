@@ -166,6 +166,12 @@ html, body {
 .switch-row { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 500; }
 .switch-row input { width: 42px; height: 24px; }
 .attribution { font-size: 11px; opacity: .55; line-height: 1.5; margin-top: 10px; }
+.diag {
+  background: #0f172a; border: 1px solid rgba(255,255,255,.15); border-radius: 10px;
+  padding: 10px 12px; margin: 0; font-size: 11px; line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #cbd5e1; white-space: pre-wrap; word-break: break-word; overflow-x: auto;
+}
 
 /* ---------- Gallery grid ---------- */
 .gallery-grid {
