@@ -1,114 +1,110 @@
-# GeoCam — GPS Map Camera (PWA)
+# GeoCam — GPS Map Camera
 
-A lightweight clone of the "GPS Map Camera" app: it stamps your photos with
-your GPS coordinates, address, a small map thumbnail, and the date/time —
-directly in your phone's browser, installable to your home screen like a
-real app. No app store, no build tools, no account needed.
+A zero-build, zero-backend Progressive Web App that stamps your photos with
+GPS location, address, a small map thumbnail, and the date/time — burned
+permanently into the image, the classic "geotag camera" look.
 
-## What it does
+Everything runs client-side. Photos are stored only in the browser's own
+IndexedDB and never uploaded anywhere. The only network calls are reverse
+geocoding (OpenStreetMap Nominatim) and map tile images (OpenStreetMap /
+Esri) — both free, no API key required.
 
-- Live camera preview (front/back) with a live preview of the stamp that
-  will be burned into your photo
-- On capture, bakes into the photo, styled like the classic geotag-camera
-  stamp layout: a bold place name (locality, state, country), country flag,
-  a Plus Code + full address (reverse-geocoded), GPS coordinates, a small
-  map thumbnail with a pin (standard street map or satellite), date & time
-  with the day name and GMT offset, and an optional custom watermark/logo
-  text
-- Settings screen: coordinate format, map style, date format, stamp theme
-  (dark/light/minimal), which fields to show, custom text, photo quality
-- Gallery: photos are saved locally on your device (IndexedDB) with
-  save-to-downloads and native Share options
-- Installable as a Progressive Web App (Add to Home Screen) with offline
-  app-shell caching via a service worker
-
-## IMPORTANT — this needs HTTPS to access your camera & GPS
-
-Phone browsers only allow camera (`getUserMedia`) and precise location
-access on a **secure context**: an `https://` URL, or `localhost`. It will
-**not** work if you just double-tap `index.html` and open it as a local
-file on your phone. You need to serve these files over HTTPS. Easiest free
-options, pick one:
-
-### Option A — GitHub Pages (recommended, free, permanent link)
-1. Create a free GitHub account if you don't have one, and a new repository
-   (e.g. `geocam`).
-2. Upload all files in this folder (`index.html`, `style.css`, `app.js`,
-   `manifest.json`, `service-worker.js`, `icons/`) to the repository.
-3. In the repo, go to **Settings → Pages**, set source to the `main`
-   branch (root), save.
-4. GitHub gives you a URL like `https://yourname.github.io/geocam/` —
-   open that on your phone, allow camera & location, and optionally tap
-   "Add to Home Screen" in your browser's share/menu.
-
-### Option B — Netlify Drop (free, no account needed for a quick link)
-1. Go to `https://app.netlify.com/drop` in a desktop browser.
-2. Drag this whole folder onto the page.
-3. Netlify gives you an `https://...netlify.app` link instantly — open it
-   on your phone.
-
-### Option C — Test locally over your Wi-Fi (quick, temporary)
-On a computer on the **same Wi-Fi** as your phone:
-```
-cd gps-map-camera-pwa
-python3 -m http.server 8000
-```
-Then use a free tunneling tool (e.g. `ngrok http 8000`, or VS Code's
-"Go Live" + a tunnel extension) to get a temporary `https://` URL, since
-plain `http://your-computer-ip:8000` will NOT have camera/GPS access on
-most phones (only `localhost` is exempt from the HTTPS rule, and that's
-not reachable from your phone).
-
-## Installing to your home screen
-
-Once you open the HTTPS link on your phone:
-- **Android (Chrome):** tap the ⋮ menu → "Add to Home screen" / "Install app"
-- **iPhone (Safari):** tap the Share icon → "Add to Home Screen"
-
-It will then launch full-screen like a normal app.
-
-## Notes & limitations (being upfront)
-
-- **Map thumbnail source:** live preview always shows real map tiles
-  (OpenStreetMap for "Standard", Esri World Imagery for "Satellite").
-  When *baking* the map into the exported photo, the browser requires the
-  tile server to allow cross-origin pixel reads (CORS). Esri's satellite
-  tiles support this, so satellite photos usually get a real embedded map.
-  OpenStreetMap's standard tile server does not reliably send CORS
-  headers, so standard-style exported photos may fall back to a simple
-  stylized map/pin graphic instead of the real street tile — the address,
-  coordinates, and date/time are unaffected either way.
-- **Reverse geocoding** uses the free OpenStreetMap Nominatim API (no key
-  needed), which is rate-limited and intended for light personal use.
-- **Plus Code** is computed on-device using Google's own open, published
-  Open Location Code standard/algorithm (not a call to a Google API) — it's
-  accurate for the real GPS fix, shortened to a local-style short code the
-  same way Google Maps/Photos display one once you're inside a named
-  locality.
-- **Branding on the stamp:** the small pill badge says "GeoCam" (this app's
-  own name) rather than a third-party app's name, and the map thumbnail's
-  small provider watermark says "OSM" or "Esri" — the actual source of that
-  map data — rather than "Google", since this app isn't using Google Maps
-  tiles and mislabeling the source wouldn't be accurate. Everything else
-  (layout, Plus Code, coordinates, date format) matches the reference style
-  closely.
-- **Weather, compass, QR scanner, cloud (Drive) sync** from the original
-  app are not included in this version — this build focuses on the core
-  geotagging camera. Let me know if you'd like any of those added next.
-- All your photos stay on your device (IndexedDB); nothing is uploaded
-  anywhere by this app.
-
-## File structure
+## Files
 
 ```
-gps-map-camera-pwa/
-├── index.html          # app screens (camera, preview, settings, gallery)
-├── style.css            # styling
-├── app.js               # camera, GPS, geocoding, map tiles, capture, storage
-├── manifest.json         # PWA install metadata
-├── service-worker.js     # offline app-shell caching
-├── icons/
-│   ├── icon-192.png
-│   └── icon-512.png
-└── README.md             # this file
+index.html          all screens (camera / preview / settings / gallery / viewer)
+style.css            all styling
+app.js               all application logic
+manifest.json        PWA manifest (orientation: "any")
+service-worker.js    offline app-shell caching
+icons/icon-192.png   home-screen icon
+icons/icon-512.png   home-screen icon
 ```
+
+No `npm install`, no bundler, no build step. Open a file in any text editor,
+edit, save, reload the browser.
+
+## Why HTTPS is required
+
+The camera (`getUserMedia`) and precise Geolocation APIs only work in a
+"secure context" — HTTPS or `localhost`. This is a browser/platform
+requirement, not a bug in this app. Plain `http://` (other than localhost)
+will not work on a phone.
+
+## Quick local test (same Wi-Fi network)
+
+1. From this folder, run a tiny local HTTPS-free dev server for **desktop
+   browser testing only** (camera/GPS will still require HTTPS on a real
+   phone — see deployment below):
+   ```
+   npx serve .
+   ```
+   or
+   ```
+   python3 -m http.server 8080
+   ```
+2. Open the printed `http://localhost:PORT` address in your desktop
+   browser. `localhost` counts as a secure context, so camera/GPS will
+   work there even over plain HTTP.
+3. To test on an actual phone, you need real HTTPS — use the GitHub Pages
+   deployment below (it's free and takes a couple of minutes), or a
+   tunnifying tool such as `npx localtunnel` / `ngrok` pointed at your
+   local server.
+
+## Deploy to GitHub Pages (recommended — free, permanent HTTPS URL)
+
+1. Create a new GitHub repository (public or private) and push these files
+   to its default branch (e.g. `main`), at the repository root.
+2. In the repo, go to **Settings → Pages**.
+3. Under "Build and deployment", set **Source** to "Deploy from a branch",
+   pick the `main` branch and `/ (root)` folder, then **Save**.
+4. Wait a minute or two, then open the URL GitHub gives you, typically:
+   `https://<your-username>.github.io/<repo-name>/`
+5. On your phone, open that URL in the browser, allow camera and location
+   access when prompted, and (optional but recommended) use the browser's
+   "Add to Home Screen" / "Install app" option so it behaves like a native
+   app.
+
+There is no separate deploy step beyond a normal `git push` — GitHub Pages
+serves the repository's files directly.
+
+## Deploy via Netlify Drop (alternative, no git required)
+
+1. Go to Netlify's drag-and-drop deploy page.
+2. Drag this whole project folder onto the page.
+3. Netlify gives you an HTTPS URL immediately — open it on your phone.
+
+## After every update
+
+1. Bump `APP_BUILD` in `app.js` **and** `CACHE_NAME` in `service-worker.js`
+   together, even for a small change. The Settings → Diagnostics panel
+   prints the build number, so you can immediately tell whether a device
+   is running stale cached code or a genuinely new bug — screenshot that
+   panel first when something "isn't working".
+2. Commit and push (for GitHub Pages) or re-drag the folder (for Netlify
+   Drop).
+3. On your phone, fully close (or remove and re-add) the home-screen
+   shortcut so the new service worker is picked up immediately, rather
+   than waiting for the next natural cache-refresh cycle.
+
+## Settings overrides for orientation quirks
+
+Some phones' sensors or camera pipelines behave unusually. If photos come
+out rotated or the wrong shape, use **Settings → Orientation overrides**:
+
+- **Saved photo orientation**: force every photo to always be portrait or
+  always landscape, instead of following how the phone is held.
+- **Scene rotation fix**: manually pick a fixed correction angle (0° / 90°
+  / 180° / 270°) instead of trusting the motion sensor.
+
+**Settings → Diagnostics** shows live build number, camera buffer size,
+raw accelerometer readings, computed tilt angle, and what the current
+orientation settings resolve to — useful for describing exactly what a
+device is reporting without needing devtools.
+
+## Privacy
+
+Photos and their embedded location data never leave your device unless you
+explicitly tap Share or Save. Reverse geocoding sends only your current
+coordinates (not the photo) to OpenStreetMap's Nominatim service in order
+to look up an address.

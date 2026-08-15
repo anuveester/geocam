@@ -1,243 +1,253 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-<title>GeoCam &mdash; GPS Map Camera</title>
-<meta name="theme-color" content="#0f172a" />
-<meta name="description" content="Stamp your photos with GPS location, address, map and date/time." />
-<link rel="manifest" href="manifest.json" />
-<link rel="icon" href="icons/icon-192.png" />
-<link rel="apple-touch-icon" href="icons/icon-192.png" />
-<link rel="stylesheet" href="style.css" />
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b0f14">
+<meta name="description" content="GeoCam - GPS Map Camera. Photos stamped with your location, address, map thumbnail and date/time.">
+<title>GeoCam - GPS Map Camera</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-  <!-- ===================== CAMERA SCREEN ===================== -->
-  <main id="camera-screen" class="screen active">
-    <div class="camera-wrap">
-      <video id="video" autoplay playsinline muted></video>
-      <canvas id="hidden-canvas" class="hidden"></canvas>
+<div id="toast" class="toast" aria-live="polite"></div>
 
-      <!-- live stamp preview (approximation of what will be burned into the photo) -->
-      <div id="live-stamp" class="stamp-overlay">
-        <div id="stamp-badge-row" class="stamp-badge-row">
-          <span class="stamp-badge"><span class="stamp-badge-icon">📍</span>GeoCam</span>
-        </div>
-        <div class="stamp-row">
-          <div id="stamp-map" class="stamp-map">
-            <div class="pin">📍</div>
-            <div id="stamp-map-brand" class="stamp-map-brand">OSM</div>
+<!-- ============ CAMERA SCREEN ============ -->
+<section id="screen-camera" class="screen active" data-screen="camera">
+  <div class="camera-stage">
+    <div id="videoWrap" class="video-wrap">
+      <video id="video" playsinline muted autoplay></video>
+      <canvas id="gridOverlay" class="grid-overlay"></canvas>
+
+      <!-- live stamp overlay approximation -->
+      <div id="liveStamp" class="live-stamp theme-dark">
+        <div id="liveBadge" class="live-badge">📍 GeoCam</div>
+        <div class="live-stamp-row">
+          <div class="live-map-thumb" id="liveMapThumb">
+            <canvas id="liveMapCanvas" width="120" height="120"></canvas>
           </div>
-          <div class="stamp-text">
-            <div id="stamp-title" class="stamp-title">Locating…</div>
-            <div id="stamp-flag" class="stamp-flag"></div>
-            <div id="stamp-address" class="stamp-address">--</div>
-            <div id="stamp-coords" class="stamp-coords">--</div>
-            <div id="stamp-extra" class="stamp-extra"></div>
-            <div id="stamp-datetime" class="stamp-datetime">--</div>
-            <div id="stamp-logo" class="stamp-logo"></div>
+          <div class="live-text-block">
+            <div class="live-title-row">
+              <span id="liveTitle" class="live-title">Locating…</span>
+              <span id="liveFlag" class="live-flag"></span>
+            </div>
+            <div id="liveAddr" class="live-addr">Waiting for GPS…</div>
+            <div id="liveCoords" class="live-coords">—</div>
+            <div id="liveExtra" class="live-extra"></div>
+            <div id="liveDatetime" class="live-datetime">—</div>
+            <div id="liveWatermark" class="live-watermark"></div>
           </div>
         </div>
       </div>
-
-      <div id="gps-badge" class="gps-badge">
-        <span id="gps-dot" class="dot"></span>
-        <span id="gps-text">Searching GPS…</span>
-      </div>
-
-      <div id="orient-badge" class="orient-badge">▯ Portrait</div>
     </div>
 
     <!-- top bar -->
-    <div class="topbar">
-      <button id="btn-settings" class="icon-btn" aria-label="Settings">⚙️</button>
-      <div class="app-title">GeoCam</div>
-      <button id="btn-flip" class="icon-btn" aria-label="Flip camera">🔄</button>
+    <div class="top-bar safe-top">
+      <button id="btnSettings" class="icon-btn" aria-label="Settings">⚙️</button>
+      <div class="status-pills">
+        <div id="gpsBadge" class="pill pill-gps">
+          <span class="dot"></span><span id="gpsBadgeText">Searching…</span>
+        </div>
+        <div id="orientBadge" class="pill pill-orient">Portrait · 0°</div>
+      </div>
+      <button id="btnGallery" class="icon-btn" aria-label="Gallery">🖼️</button>
     </div>
 
-    <!-- zoom control — works on both front and rear camera; uses hardware
-         zoom when the camera supports it, otherwise a CSS/crop-based digital
-         zoom so it's never just missing on cameras without hardware zoom. -->
-    <div class="zoom-bar">
+    <!-- zoom controls -->
+    <div class="zoom-controls safe-bottom">
       <div class="zoom-chips">
-        <button type="button" class="zoom-chip" data-zoom="1">1x</button>
-        <button type="button" class="zoom-chip" data-zoom="2">2x</button>
-        <button type="button" class="zoom-chip" data-zoom="3">3x</button>
+        <button class="zoom-chip" data-zoom="1">1x</button>
+        <button class="zoom-chip" data-zoom="2">2x</button>
+        <button class="zoom-chip" data-zoom="3">3x</button>
       </div>
-      <input type="range" id="opt-zoom" min="1" max="4" step="0.1" value="1" aria-label="Zoom" />
-      <span id="zoom-level" class="zoom-level">1.0x</span>
+      <input id="zoomSlider" class="zoom-slider" type="range" min="1" max="4" step="0.1" value="1">
     </div>
 
     <!-- bottom controls -->
-    <div class="bottombar">
-      <button id="btn-gallery" class="thumb-btn" aria-label="Gallery"></button>
-      <button id="btn-capture" class="shutter-btn" aria-label="Capture photo"></button>
-      <button id="btn-flash" class="icon-btn" aria-label="Toggle grid">▦</button>
+    <div class="bottom-bar safe-bottom">
+      <button id="btnGrid" class="pill-btn" aria-label="Toggle grid">▦</button>
+      <button id="btnShutter" class="shutter-btn" aria-label="Take photo"><span class="shutter-inner"></span></button>
+      <button id="btnFlip" class="pill-btn" aria-label="Flip camera">🔄</button>
     </div>
 
-    <div id="grid-overlay" class="grid-overlay hidden"></div>
-    <div id="start-hint" class="start-hint">
-      <p>GeoCam needs camera &amp; location access.</p>
-      <button id="btn-start" class="primary-btn">Enable Camera</button>
-    </div>
-  </main>
+    <div id="cameraOverlayMsg" class="camera-overlay-msg hidden"></div>
+  </div>
+</section>
 
-  <!-- ===================== PREVIEW / RESULT SCREEN ===================== -->
-  <section id="preview-screen" class="screen">
-    <div class="preview-wrap">
-      <img id="preview-img" alt="Captured photo" />
+<!-- ============ PREVIEW / REVIEW SCREEN ============ -->
+<section id="screen-preview" class="screen" data-screen="preview">
+  <div class="preview-stage">
+    <img id="previewImg" alt="Captured photo" class="preview-img">
+    <div class="preview-bar safe-bottom">
+      <button id="btnDiscard" class="preview-btn">🗑️ Discard</button>
+      <button id="btnShare" class="preview-btn preview-btn-primary">📤 Share</button>
+      <button id="btnSave" class="preview-btn">💾 Save</button>
     </div>
-    <div class="preview-bar">
-      <button id="btn-discard" class="secondary-btn">✕ Discard</button>
-      <button id="btn-share" class="secondary-btn">↗ Share</button>
-      <button id="btn-save" class="primary-btn">⬇ Save Photo</button>
-    </div>
-  </section>
+  </div>
+</section>
 
-  <!-- ===================== SETTINGS SCREEN ===================== -->
-  <section id="settings-screen" class="screen">
-    <div class="panel-header">
-      <button id="btn-settings-close" class="icon-btn">←</button>
-      <h2>Settings</h2>
+<!-- ============ SETTINGS SCREEN ============ -->
+<section id="screen-settings" class="screen" data-screen="settings">
+  <div class="panel">
+    <div class="panel-header safe-top">
+      <button id="btnSettingsBack" class="icon-btn" aria-label="Back">←</button>
+      <h1>Settings</h1>
+      <div class="spacer"></div>
     </div>
     <div class="panel-body">
 
-      <div class="field-group">
-        <label>Coordinate format</label>
-        <select id="opt-coord-format">
-          <option value="latlong" selected>Lat / Long (Lat 28.6139° Long 77.2090°)</option>
-          <option value="decimal">Decimal (28.6139° N, 77.2090° E)</option>
-          <option value="dms">DMS (28°36'50"N 77°12'32"E)</option>
-        </select>
-      </div>
+      <form id="settingsForm">
+        <div class="settings-group">
+          <h2>Stamp content</h2>
 
-      <div class="field-group">
-        <label>Map style</label>
-        <select id="opt-map-style">
-          <option value="standard">Standard (street map)</option>
-          <option value="satellite" selected>Satellite</option>
-          <option value="none">No map thumbnail</option>
-        </select>
-      </div>
+          <label class="field">
+            <span>Coordinate format</span>
+            <select name="coordFormat">
+              <option value="latlong">Lat/Long</option>
+              <option value="decimal">Decimal degrees</option>
+              <option value="dms">DMS (°′″)</option>
+            </select>
+          </label>
 
-      <div class="field-group">
-        <label>Date &amp; time format</label>
-        <select id="opt-date-format">
-          <option value="full" selected>Full (Saturday, 15/08/2026 08:24 AM GMT +05:30)</option>
-          <option value="dmy24">DD/MM/YYYY, 24h</option>
-          <option value="mdy12">MM/DD/YYYY, 12h AM/PM</option>
-          <option value="long">Month DD, YYYY, 12h AM/PM</option>
-          <option value="iso">ISO (YYYY-MM-DD HH:mm)</option>
-        </select>
-      </div>
+          <label class="field">
+            <span>Map style</span>
+            <select name="mapStyle">
+              <option value="standard">Standard street map</option>
+              <option value="satellite">Satellite</option>
+              <option value="none">No map thumbnail</option>
+            </select>
+          </label>
 
-      <div class="field-group">
-        <label>Stamp theme</label>
-        <select id="opt-theme">
-          <option value="dark">Dark bar</option>
-          <option value="light">Light bar</option>
-          <option value="minimal">Minimal (no background)</option>
-        </select>
-      </div>
+          <label class="field">
+            <span>Date/time format</span>
+            <select name="datetimeFormat">
+              <option value="full">Full (weekday + GMT offset)</option>
+              <option value="dmy24">DD/MM/YYYY, 24h</option>
+              <option value="mdy12">MM/DD/YYYY, 12h</option>
+              <option value="longmonth">Long month name</option>
+              <option value="iso">ISO 8601</option>
+            </select>
+          </label>
 
-      <div class="field-group toggles">
-        <label class="switch-row"><span>Show map thumbnail</span><input type="checkbox" id="opt-show-map" checked /></label>
-        <label class="switch-row"><span>Show place name &amp; address</span><input type="checkbox" id="opt-show-address" checked /></label>
-        <label class="switch-row"><span>Show country flag</span><input type="checkbox" id="opt-show-flag" checked /></label>
-        <label class="switch-row"><span>Show coordinates</span><input type="checkbox" id="opt-show-coords" checked /></label>
-        <label class="switch-row"><span>Show Plus Code</span><input type="checkbox" id="opt-show-pluscode" checked /></label>
-        <label class="switch-row"><span>Show date &amp; time</span><input type="checkbox" id="opt-show-datetime" checked /></label>
-        <label class="switch-row"><span>Show accuracy / altitude</span><input type="checkbox" id="opt-show-extra" /></label>
-        <label class="switch-row"><span>Show GeoCam badge</span><input type="checkbox" id="opt-show-badge" checked /></label>
-        <label class="switch-row"><span>Grid lines while shooting</span><input type="checkbox" id="opt-show-grid" /></label>
-      </div>
+          <label class="field">
+            <span>Stamp theme</span>
+            <select name="theme">
+              <option value="dark">Dark bar</option>
+              <option value="light">Light bar</option>
+              <option value="minimal">Minimal (no background)</option>
+            </select>
+          </label>
 
-      <div class="field-group">
-        <label>Custom logo / watermark text</label>
-        <input type="text" id="opt-custom-text" placeholder="e.g. your name, company, #hashtag" maxlength="60" />
-      </div>
+          <label class="field">
+            <span>Custom watermark / logo text</span>
+            <input type="text" name="watermark" maxlength="60" placeholder="e.g. Acme Field Ops #123">
+          </label>
 
-      <div class="field-group">
-        <label>Photo quality</label>
-        <select id="opt-quality">
-          <option value="0.7">Standard</option>
-          <option value="0.9" selected>High</option>
-          <option value="1.0">Maximum</option>
-        </select>
-      </div>
+          <label class="field">
+            <span>Photo export quality</span>
+            <select name="quality">
+              <option value="0.7">Standard</option>
+              <option value="0.9">High</option>
+              <option value="1.0">Maximum</option>
+            </select>
+          </label>
+        </div>
 
-      <div class="field-group">
-        <label>Saved photo orientation</label>
-        <select id="opt-photo-orientation">
-          <option value="auto" selected>Auto (follow how I hold the phone)</option>
-          <option value="portrait">Always portrait</option>
-          <option value="landscape">Always landscape</option>
-        </select>
-        <p class="attribution">If Auto keeps guessing wrong, your phone isn't reporting its rotation to the browser (this happens when auto-rotate / rotation lock is switched off in Android settings). Force the shape here instead.</p>
-      </div>
+        <div class="settings-group">
+          <h2>Visible fields</h2>
+          <label class="field field-toggle"><span>Map thumbnail</span><input type="checkbox" name="showMap"></label>
+          <label class="field field-toggle"><span>Place / address</span><input type="checkbox" name="showAddress"></label>
+          <label class="field field-toggle"><span>Country flag</span><input type="checkbox" name="showFlag"></label>
+          <label class="field field-toggle"><span>Coordinates</span><input type="checkbox" name="showCoords"></label>
+          <label class="field field-toggle"><span>Plus Code</span><input type="checkbox" name="showPlusCode"></label>
+          <label class="field field-toggle"><span>Date / time</span><input type="checkbox" name="showDatetime"></label>
+          <label class="field field-toggle"><span>Accuracy / altitude</span><input type="checkbox" name="showAccuracy"></label>
+          <label class="field field-toggle"><span>GeoCam badge</span><input type="checkbox" name="showBadge"></label>
+          <label class="field field-toggle"><span>Grid lines</span><input type="checkbox" name="showGrid"></label>
+        </div>
 
-      <div class="field-group">
-        <label>Scene rotation fix</label>
-        <select id="opt-photo-rotation">
-          <option value="auto" selected>Auto (use the motion sensor)</option>
-          <option value="0">None (photo already upright)</option>
-          <option value="90">Rotate 90° right</option>
-          <option value="180">Rotate 180°</option>
-          <option value="270">Rotate 90° left</option>
-        </select>
-        <p class="attribution">Auto reads the phone's motion sensor, which knows how you're holding the phone even when Android's auto-rotate is switched off. Only pick a fixed angle if Auto still gets it wrong. The GeoCam text always stays flat along the bottom either way.</p>
-      </div>
+        <div class="settings-group">
+          <h2>Orientation overrides</h2>
 
-      <div class="field-group">
-        <label>Diagnostics</label>
-        <pre id="diag-readout" class="diag">--</pre>
-        <p class="attribution">Live values from your phone. If "build" doesn't match the newest version, an old cached copy is still running.</p>
-      </div>
+          <label class="field">
+            <span>Saved photo orientation</span>
+            <select name="savedOrientation">
+              <option value="auto">Auto (follow how phone is held)</option>
+              <option value="portrait">Always portrait</option>
+              <option value="landscape">Always landscape</option>
+            </select>
+          </label>
 
-      <div class="field-group">
-        <label>Stamp margin from edges: <span id="margin-value">30px</span></label>
-        <input type="range" id="opt-margin" min="10" max="100" step="5" value="30" />
-      </div>
+          <label class="field">
+            <span>Scene rotation fix</span>
+            <select name="rotationFix">
+              <option value="auto">Auto (use motion sensor)</option>
+              <option value="none">None</option>
+              <option value="90">90°</option>
+              <option value="180">180°</option>
+              <option value="270">270°</option>
+            </select>
+          </label>
+        </div>
 
-      <div class="field-group">
-        <label>Stamp / font size: <span id="size-value">110%</span></label>
-        <input type="range" id="opt-size-scale" min="70" max="150" step="5" value="110" />
-      </div>
+        <div class="settings-group">
+          <h2>Stamp sizing (export only)</h2>
+          <label class="field field-slider">
+            <span>Stamp margin from edge: <b id="marginVal">0</b>px</span>
+            <input type="range" name="stampMargin" min="0" max="40" step="1" value="0">
+          </label>
+          <label class="field field-slider">
+            <span>Stamp / font size: <b id="fontScaleVal">1.0</b>x</span>
+            <input type="range" name="fontScale" min="0.7" max="1.5" step="0.05" value="1">
+          </label>
+        </div>
 
-      <p class="attribution">Margin and size apply to the photo you capture (not this live viewfinder preview). The stamp always spans the full photo width and occupies the bottom 25% of its height, so portrait and landscape shots both adapt automatically.</p>
-      <p class="attribution">Map &amp; address data © OpenStreetMap contributors. Satellite imagery © Esri. Plus Codes are Google's open Open Location Code standard, computed on-device.</p>
+        <div class="settings-group">
+          <h2>Diagnostics</h2>
+          <pre id="diagnostics" class="diagnostics">—</pre>
+        </div>
+
+        <div class="settings-group">
+          <button type="button" id="btnResetSettings" class="danger-btn">Reset to defaults</button>
+        </div>
+      </form>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- ===================== GALLERY SCREEN ===================== -->
-  <section id="gallery-screen" class="screen">
-    <div class="panel-header">
-      <button id="btn-gallery-close" class="icon-btn">←</button>
-      <h2>Gallery</h2>
+<!-- ============ GALLERY SCREEN ============ -->
+<section id="screen-gallery" class="screen" data-screen="gallery">
+  <div class="panel">
+    <div class="panel-header safe-top">
+      <button id="btnGalleryBack" class="icon-btn" aria-label="Back">←</button>
+      <h1>Gallery</h1>
+      <div class="spacer"></div>
     </div>
-    <div id="gallery-grid" class="gallery-grid"></div>
-    <p id="gallery-empty" class="empty-msg">No photos yet. Photos you save are stored on this device.</p>
-  </section>
+    <div class="panel-body">
+      <div id="galleryGrid" class="gallery-grid"></div>
+      <div id="galleryEmpty" class="gallery-empty hidden">No photos yet. Take your first geotagged photo!</div>
+    </div>
+  </div>
+</section>
 
-  <!-- ===================== VIEWER (full photo from gallery) ===================== -->
-  <section id="viewer-screen" class="screen">
-    <div class="panel-header">
-      <button id="btn-viewer-close" class="icon-btn">←</button>
-      <h2>Photo</h2>
-      <button id="btn-viewer-delete" class="icon-btn">🗑</button>
+<!-- ============ VIEWER SCREEN ============ -->
+<section id="screen-viewer" class="screen" data-screen="viewer">
+  <div class="preview-stage">
+    <img id="viewerImg" alt="Saved photo" class="preview-img">
+    <div class="preview-bar safe-bottom">
+      <button id="btnViewerBack" class="preview-btn">← Back</button>
+      <button id="btnViewerShare" class="preview-btn preview-btn-primary">📤 Share</button>
+      <button id="btnViewerSave" class="preview-btn">💾 Save</button>
+      <button id="btnViewerDelete" class="preview-btn preview-btn-danger">🗑️ Delete</button>
     </div>
-    <div class="preview-wrap">
-      <img id="viewer-img" alt="Saved photo" />
-    </div>
-    <div class="preview-bar">
-      <button id="btn-viewer-share" class="secondary-btn">↗ Share</button>
-      <button id="btn-viewer-save" class="primary-btn">⬇ Save Photo</button>
-    </div>
-  </section>
+  </div>
+</section>
 
-  <div id="toast" class="toast"></div>
+<canvas id="workCanvas" class="hidden-canvas"></canvas>
 
-  <script src="app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

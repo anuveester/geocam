@@ -1,13 +1,13 @@
-// IMPORTANT: bump this version string every time you re-upload changed files.
-// The old version of this file used a cache-FIRST strategy, which meant once
-// your phone had cached index.html/app.js/style.css once, it would keep
-// serving that same copy forever — clearing Chrome's "browsing data" doesn't
-// touch an installed home-screen PWA's storage, so updates never appeared to
-// land. This version fetches from the network FIRST (so you always get the
-// latest files the moment you reopen the app while online) and only falls
-// back to the cached copy if you're offline.
-const CACHE_NAME = 'geocam-cache-v9';
-const CORE_ASSETS = [
+'use strict';
+/* GeoCam service worker — offline app-shell caching.
+   Bump CACHE_NAME every time app.js/index.html/style.css/manifest.json
+   change, in lockstep with APP_BUILD in app.js, so the diagnostics panel's
+   build number and the cache actually in use can never silently disagree. */
+
+const CACHE_NAME = 'geocam-cache-v1';
+
+const APP_SHELL = [
+  './',
   './index.html',
   './style.css',
   './app.js',
@@ -18,35 +18,40 @@ const CORE_ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS)).catch(() => {})
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => self.skipWaiting())
   );
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    )
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-// Network-first for our own app shell files, so edits show up immediately;
-// falls back to the last cached copy only when there's no network at all.
-// Map tiles / geocoding requests are left alone (always go straight to network).
+// Network-first for same-origin app-shell requests (so a fresh deploy is
+// picked up as soon as it's reachable), falling back to cache when offline.
+// Cross-origin requests (map tiles, Nominatim, etc.) are passed straight
+// through to the network — this app never caches those.
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-  const isOwnAsset = url.origin === self.location.origin;
-  if (!isOwnAsset) return;
+  const req = event.request;
+  const url = new URL(req.url);
+
+  if (url.origin !== self.location.origin) return; // let the browser handle it normally
+  if (req.method !== 'GET') return;
 
   event.respondWith(
-    fetch(event.request)
-      .then((resp) => {
-        const clone = resp.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        return resp;
+    fetch(req)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, copy)).catch(() => {});
+        return res;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() =>
+        caches.match(req).then((cached) => cached || caches.match('./index.html'))
+      )
   );
 });
