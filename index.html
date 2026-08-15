@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>GeoCam &mdash; GPS Map Camera</title>
+<meta name="theme-color" content="#0f172a" />
+<meta name="description" content="Stamp your photos with GPS location, address, map and date/time." />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===================== CAMERA SCREEN ===================== -->
+  <main id="camera-screen" class="screen active">
+    <div class="camera-wrap">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="hidden-canvas" class="hidden"></canvas>
+
+      <!-- live stamp preview (approximation of what will be burned into the photo) -->
+      <div id="live-stamp" class="stamp-overlay">
+        <div id="stamp-badge-row" class="stamp-badge-row">
+          <span class="stamp-badge"><span class="stamp-badge-icon">📍</span>GeoCam</span>
+        </div>
+        <div class="stamp-row">
+          <div id="stamp-map" class="stamp-map">
+            <div class="pin">📍</div>
+            <div id="stamp-map-brand" class="stamp-map-brand">OSM</div>
+          </div>
+          <div class="stamp-text">
+            <div id="stamp-title" class="stamp-title">Locating…</div>
+            <div id="stamp-flag" class="stamp-flag"></div>
+            <div id="stamp-address" class="stamp-address">--</div>
+            <div id="stamp-coords" class="stamp-coords">--</div>
+            <div id="stamp-extra" class="stamp-extra"></div>
+            <div id="stamp-datetime" class="stamp-datetime">--</div>
+            <div id="stamp-logo" class="stamp-logo"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="gps-badge" class="gps-badge">
+        <span id="gps-dot" class="dot"></span>
+        <span id="gps-text">Searching GPS…</span>
+      </div>
+    </div>
+
+    <!-- top bar -->
+    <div class="topbar">
+      <button id="btn-settings" class="icon-btn" aria-label="Settings">⚙️</button>
+      <div class="app-title">GeoCam</div>
+      <button id="btn-flip" class="icon-btn" aria-label="Flip camera">🔄</button>
+    </div>
+
+    <!-- bottom controls -->
+    <div class="bottombar">
+      <button id="btn-gallery" class="thumb-btn" aria-label="Gallery"></button>
+      <button id="btn-capture" class="shutter-btn" aria-label="Capture photo"></button>
+      <button id="btn-flash" class="icon-btn" aria-label="Toggle grid">▦</button>
+    </div>
+
+    <div id="grid-overlay" class="grid-overlay hidden"></div>
+    <div id="start-hint" class="start-hint">
+      <p>GeoCam needs camera &amp; location access.</p>
+      <button id="btn-start" class="primary-btn">Enable Camera</button>
+    </div>
+  </main>
+
+  <!-- ===================== PREVIEW / RESULT SCREEN ===================== -->
+  <section id="preview-screen" class="screen">
+    <div class="preview-wrap">
+      <img id="preview-img" alt="Captured photo" />
+    </div>
+    <div class="preview-bar">
+      <button id="btn-discard" class="secondary-btn">✕ Discard</button>
+      <button id="btn-share" class="secondary-btn">↗ Share</button>
+      <button id="btn-save" class="primary-btn">⬇ Save Photo</button>
+    </div>
+  </section>
+
+  <!-- ===================== SETTINGS SCREEN ===================== -->
+  <section id="settings-screen" class="screen">
+    <div class="panel-header">
+      <button id="btn-settings-close" class="icon-btn">←</button>
+      <h2>Settings</h2>
+    </div>
+    <div class="panel-body">
+
+      <div class="field-group">
+        <label>Coordinate format</label>
+        <select id="opt-coord-format">
+          <option value="latlong" selected>Lat / Long (Lat 28.6139° Long 77.2090°)</option>
+          <option value="decimal">Decimal (28.6139° N, 77.2090° E)</option>
+          <option value="dms">DMS (28°36'50"N 77°12'32"E)</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label>Map style</label>
+        <select id="opt-map-style">
+          <option value="standard">Standard (street map)</option>
+          <option value="satellite" selected>Satellite</option>
+          <option value="none">No map thumbnail</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label>Date &amp; time format</label>
+        <select id="opt-date-format">
+          <option value="full" selected>Full (Saturday, 15/08/2026 08:24 AM GMT +05:30)</option>
+          <option value="dmy24">DD/MM/YYYY, 24h</option>
+          <option value="mdy12">MM/DD/YYYY, 12h AM/PM</option>
+          <option value="long">Month DD, YYYY, 12h AM/PM</option>
+          <option value="iso">ISO (YYYY-MM-DD HH:mm)</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label>Stamp theme</label>
+        <select id="opt-theme">
+          <option value="dark">Dark bar</option>
+          <option value="light">Light bar</option>
+          <option value="minimal">Minimal (no background)</option>
+        </select>
+      </div>
+
+      <div class="field-group toggles">
+        <label class="switch-row"><span>Show map thumbnail</span><input type="checkbox" id="opt-show-map" checked /></label>
+        <label class="switch-row"><span>Show place name &amp; address</span><input type="checkbox" id="opt-show-address" checked /></label>
+        <label class="switch-row"><span>Show country flag</span><input type="checkbox" id="opt-show-flag" checked /></label>
+        <label class="switch-row"><span>Show coordinates</span><input type="checkbox" id="opt-show-coords" checked /></label>
+        <label class="switch-row"><span>Show Plus Code</span><input type="checkbox" id="opt-show-pluscode" checked /></label>
+        <label class="switch-row"><span>Show date &amp; time</span><input type="checkbox" id="opt-show-datetime" checked /></label>
+        <label class="switch-row"><span>Show accuracy / altitude</span><input type="checkbox" id="opt-show-extra" /></label>
+        <label class="switch-row"><span>Show GeoCam badge</span><input type="checkbox" id="opt-show-badge" checked /></label>
+        <label class="switch-row"><span>Grid lines while shooting</span><input type="checkbox" id="opt-show-grid" /></label>
+      </div>
+
+      <div class="field-group">
+        <label>Custom logo / watermark text</label>
+        <input type="text" id="opt-custom-text" placeholder="e.g. your name, company, #hashtag" maxlength="60" />
+      </div>
+
+      <div class="field-group">
+        <label>Photo quality</label>
+        <select id="opt-quality">
+          <option value="0.7">Standard</option>
+          <option value="0.9" selected>High</option>
+          <option value="1.0">Maximum</option>
+        </select>
+      </div>
+
+      <p class="attribution">Map &amp; address data © OpenStreetMap contributors. Satellite imagery © Esri. Plus Codes are Google's open Open Location Code standard, computed on-device.</p>
+    </div>
+  </section>
+
+  <!-- ===================== GALLERY SCREEN ===================== -->
+  <section id="gallery-screen" class="screen">
+    <div class="panel-header">
+      <button id="btn-gallery-close" class="icon-btn">←</button>
+      <h2>Gallery</h2>
+    </div>
+    <div id="gallery-grid" class="gallery-grid"></div>
+    <p id="gallery-empty" class="empty-msg">No photos yet. Photos you save are stored on this device.</p>
+  </section>
+
+  <!-- ===================== VIEWER (full photo from gallery) ===================== -->
+  <section id="viewer-screen" class="screen">
+    <div class="panel-header">
+      <button id="btn-viewer-close" class="icon-btn">←</button>
+      <h2>Photo</h2>
+      <button id="btn-viewer-delete" class="icon-btn">🗑</button>
+    </div>
+    <div class="preview-wrap">
+      <img id="viewer-img" alt="Saved photo" />
+    </div>
+    <div class="preview-bar">
+      <button id="btn-viewer-share" class="secondary-btn">↗ Share</button>
+      <button id="btn-viewer-save" class="primary-btn">⬇ Save Photo</button>
+    </div>
+  </section>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

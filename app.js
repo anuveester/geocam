@@ -1,0 +1,768 @@
+/* ==========================================================================
+   GeoCam — GPS Map Camera (PWA)
+   A lightweight clone of the "GPS Map Camera" style geotagging camera app.
+   Everything runs client-side in the browser: camera capture (getUserMedia),
+   live location (Geolocation API), reverse geocoding + map tiles (OpenStreetMap
+   / Esri, both free & keyless), and local photo storage (IndexedDB).
+   ========================================================================== */
+
+/* ---------------------------- small utilities ---------------------------- */
+const $ = (id) => document.getElementById(id);
+let toastTimer = null;
+function toast(msg, ms = 2200) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'));
+  $(id).classList.add('active');
+}
+
+/* ------------------------------- settings -------------------------------- */
+const DEFAULT_SETTINGS = {
+  coordFormat: 'latlong',
+  mapStyle: 'satellite',
+  dateFormat: 'full',
+  theme: 'dark',
+  showMap: true,
+  showAddress: true,
+  showFlag: true,
+  showCoords: true,
+  showPlusCode: true,
+  showDatetime: true,
+  showExtra: false,
+  showBadge: true,
+  showGrid: false,
+  customText: '',
+  quality: '0.9',
+};
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem('geocam_settings');
+    return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : { ...DEFAULT_SETTINGS };
+  } catch (e) {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+function saveSettings() {
+  localStorage.setItem('geocam_settings', JSON.stringify(settings));
+}
+let settings = loadSettings();
+
+function applySettingsToForm() {
+  $('opt-coord-format').value = settings.coordFormat;
+  $('opt-map-style').value = settings.mapStyle;
+  $('opt-date-format').value = settings.dateFormat;
+  $('opt-theme').value = settings.theme;
+  $('opt-show-map').checked = settings.showMap;
+  $('opt-show-address').checked = settings.showAddress;
+  $('opt-show-flag').checked = settings.showFlag;
+  $('opt-show-coords').checked = settings.showCoords;
+  $('opt-show-pluscode').checked = settings.showPlusCode;
+  $('opt-show-datetime').checked = settings.showDatetime;
+  $('opt-show-extra').checked = settings.showExtra;
+  $('opt-show-badge').checked = settings.showBadge;
+  $('opt-show-grid').checked = settings.showGrid;
+  $('opt-custom-text').value = settings.customText;
+  $('opt-quality').value = settings.quality;
+}
+
+function bindSettingsForm() {
+  const map = {
+    'opt-coord-format': 'coordFormat',
+    'opt-map-style': 'mapStyle',
+    'opt-date-format': 'dateFormat',
+    'opt-theme': 'theme',
+    'opt-quality': 'quality',
+  };
+  Object.entries(map).forEach(([elId, key]) => {
+    $(elId).addEventListener('change', (e) => {
+      settings[key] = e.target.value;
+      saveSettings();
+      updateLiveStamp();
+    });
+  });
+  const checks = {
+    'opt-show-map': 'showMap',
+    'opt-show-address': 'showAddress',
+    'opt-show-flag': 'showFlag',
+    'opt-show-coords': 'showCoords',
+    'opt-show-pluscode': 'showPlusCode',
+    'opt-show-datetime': 'showDatetime',
+    'opt-show-extra': 'showExtra',
+    'opt-show-badge': 'showBadge',
+    'opt-show-grid': 'showGrid',
+  };
+  Object.entries(checks).forEach(([elId, key]) => {
+    $(elId).addEventListener('change', (e) => {
+      settings[key] = e.target.checked;
+      saveSettings();
+      updateLiveStamp();
+      $('grid-overlay').classList.toggle('hidden', !settings.showGrid);
+    });
+  });
+  $('opt-custom-text').addEventListener('input', (e) => {
+    settings.customText = e.target.value;
+    saveSettings();
+    updateLiveStamp();
+  });
+}
+
+/* -------------------------- Open Location Code (Plus Codes) -------------------------- */
+// Compact, from-spec implementation of Google's open Open Location Code
+// standard (https://github.com/google/open-location-code) — computed
+// entirely on-device, no API call. We compute the standard 10-digit code
+// then drop the leading 4 characters to get a short "local" style code,
+// e.g. "7J4VV9R3+F2" -> "V9R3+F2" (mirrors how Google Maps/Photos display
+// a shortened Plus Code once you're within the named locality).
+const OLC_ALPHABET = '23456789CFGHJMPQRVWX';
+const OLC_SEP = '+';
+const OLC_SEP_POS = 8;
+const OLC_PAIR_RES = [20.0, 1.0, 0.05, 0.0025, 0.000125];
+function encodeOLC(lat, lon, codeLength = 10) {
+  lat = Math.min(90, Math.max(-90, lat));
+  if (lat === 90) lat -= 0.000001;
+  lon = (((lon + 180) % 360) + 360) % 360 - 180;
+  let adjLat = lat + 90, adjLon = lon + 180, code = '', digitCount = 0;
+  while (digitCount < codeLength) {
+    const placeValue = OLC_PAIR_RES[Math.floor(digitCount / 2)];
+    let dv = Math.floor(adjLat / placeValue);
+    adjLat -= dv * placeValue;
+    code += OLC_ALPHABET[dv];
+    digitCount++;
+    dv = Math.floor(adjLon / placeValue);
+    adjLon -= dv * placeValue;
+    code += OLC_ALPHABET[dv];
+    digitCount++;
+    if (digitCount === OLC_SEP_POS && digitCount < codeLength) code += OLC_SEP;
+  }
+  if (code.length < OLC_SEP_POS) code += '0'.repeat(OLC_SEP_POS - code.length);
+  if (code.length === OLC_SEP_POS) code += OLC_SEP;
+  return code;
+}
+function shortPlusCode(lat, lon) {
+  const full = encodeOLC(lat, lon, 10);
+  return full.length > 4 ? full.slice(4) : full;
+}
+
+// ISO 3166-1 alpha-2 country code -> flag emoji (regional indicator symbols).
+function flagEmoji(countryCode) {
+  if (!countryCode || countryCode.length !== 2) return '';
+  return String.fromCodePoint(...countryCode.toUpperCase().split('').map((c) => 127397 + c.charCodeAt(0)));
+}
+
+// Turn a Nominatim `address` object into a short bold title (locality, state,
+// country) and a fuller address line (locality, state + postcode, country),
+// matching the layout used by geotagging-camera apps.
+function buildPlaceInfo(addr, displayName) {
+  addr = addr || {};
+  const locality = addr.village || addr.town || addr.city || addr.hamlet || addr.suburb || addr.county || '';
+  const state = addr.state || addr.state_district || '';
+  const country = addr.country || '';
+  const postcode = addr.postcode || '';
+  const title = [locality, state, country].filter(Boolean).join(', ') || displayName || 'Unknown location';
+  const addrLine = [locality, [state, postcode].filter(Boolean).join(' '), country].filter(Boolean).join(', ') || displayName || '';
+  return { title, addrLine, countryCode: addr.country_code || '' };
+}
+
+/* ------------------------------- geolocation ------------------------------ */
+let geoState = {
+  lat: null, lon: null, accuracy: null, altitude: null, heading: null,
+  address: 'Locating…', title: 'Locating…', addrLine: '', flag: '', plusCode: '',
+  addressAt: 0, watchId: null,
+};
+
+function startGeolocation() {
+  if (!('geolocation' in navigator)) {
+    $('gps-text').textContent = 'GPS not supported';
+    $('gps-dot').classList.add('error');
+    return;
+  }
+  geoState.watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      geoState.lat = pos.coords.latitude;
+      geoState.lon = pos.coords.longitude;
+      geoState.accuracy = pos.coords.accuracy;
+      geoState.altitude = pos.coords.altitude;
+      geoState.plusCode = shortPlusCode(geoState.lat, geoState.lon);
+      $('gps-dot').classList.add('locked');
+      $('gps-dot').classList.remove('error');
+      $('gps-text').textContent = `${geoState.accuracy ? Math.round(geoState.accuracy) + 'm' : 'GPS locked'}`;
+      maybeReverseGeocode();
+      updateLiveStamp();
+      updateLiveMapThumb();
+    },
+    (err) => {
+      $('gps-dot').classList.add('error');
+      $('gps-text').textContent = err.code === 1 ? 'Location permission denied' : 'GPS unavailable';
+    },
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+  );
+}
+
+// Reverse-geocode via Nominatim (OpenStreetMap), throttled to ~1 request / 8s
+// and only when the position has moved meaningfully.
+let lastGeocodeLat = null, lastGeocodeLon = null, geocodeInFlight = false;
+function distMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000, toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+async function maybeReverseGeocode() {
+  const now = Date.now();
+  if (geocodeInFlight) return;
+  if (lastGeocodeLat !== null) {
+    const moved = distMeters(lastGeocodeLat, lastGeocodeLon, geoState.lat, geoState.lon);
+    if (moved < 25 && now - geoState.addressAt < 8000) return;
+  }
+  geocodeInFlight = true;
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${geoState.lat}&lon=${geoState.lon}&zoom=17&addressdetails=1`;
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (res.ok) {
+      const data = await res.json();
+      geoState.address = data.display_name || `${geoState.lat.toFixed(5)}, ${geoState.lon.toFixed(5)}`;
+      const info = buildPlaceInfo(data.address, data.display_name);
+      geoState.title = info.title;
+      geoState.addrLine = info.addrLine;
+      geoState.flag = flagEmoji(info.countryCode);
+    }
+  } catch (e) {
+    if (geoState.title === 'Locating…') { geoState.title = 'Address unavailable'; geoState.addrLine = ''; }
+  } finally {
+    geoState.addressAt = Date.now();
+    lastGeocodeLat = geoState.lat;
+    lastGeocodeLon = geoState.lon;
+    geocodeInFlight = false;
+    updateLiveStamp();
+  }
+}
+
+/* ------------------------------ formatting -------------------------------- */
+function toDMS(deg, isLat) {
+  const dir = deg >= 0 ? (isLat ? 'N' : 'E') : (isLat ? 'S' : 'W');
+  const abs = Math.abs(deg);
+  const d = Math.floor(abs);
+  const minFloat = (abs - d) * 60;
+  const m = Math.floor(minFloat);
+  const s = ((minFloat - m) * 60).toFixed(1);
+  return `${d}°${m}'${s}"${dir}`;
+}
+function formatCoords() {
+  if (geoState.lat === null) return '--';
+  if (settings.coordFormat === 'dms') {
+    return `${toDMS(geoState.lat, true)} ${toDMS(geoState.lon, false)}`;
+  }
+  if (settings.coordFormat === 'latlong') {
+    return `Lat ${geoState.lat.toFixed(6)}°  Long ${geoState.lon.toFixed(6)}°`;
+  }
+  return `${geoState.lat.toFixed(6)}° ${geoState.lat >= 0 ? 'N' : 'S'}, ${geoState.lon.toFixed(6)}° ${geoState.lon >= 0 ? 'E' : 'W'}`;
+}
+function pad(n) { return String(n).padStart(2, '0'); }
+function tzOffsetString(d) {
+  const offMin = -d.getTimezoneOffset();
+  const sign = offMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offMin);
+  return `GMT ${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+function formatDatetime(d) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const hh24 = d.getHours(), mm = pad(d.getMinutes());
+  const hh12 = ((hh24 % 12) || 12);
+  const ampm = hh24 >= 12 ? 'PM' : 'AM';
+  switch (settings.dateFormat) {
+    case 'full':
+      return `${days[d.getDay()]}, ${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(hh12)}:${mm} ${ampm} ${tzOffsetString(d)}`;
+    case 'mdy12':
+      return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()} ${pad(hh12)}:${mm} ${ampm}`;
+    case 'long':
+      return `${months[d.getMonth()]} ${pad(d.getDate())}, ${d.getFullYear()}, ${pad(hh12)}:${mm} ${ampm}`;
+    case 'iso':
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(hh24)}:${mm}`;
+    case 'dmy24':
+    default:
+      return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}, ${pad(hh24)}:${mm}`;
+  }
+}
+function formatExtra() {
+  const bits = [];
+  if (geoState.altitude !== null && geoState.altitude !== undefined) bits.push(`Alt ${Math.round(geoState.altitude)}m`);
+  if (geoState.accuracy) bits.push(`±${Math.round(geoState.accuracy)}m`);
+  return bits.join('  ·  ');
+}
+
+/* ------------------------------ live stamp UI ------------------------------ */
+function updateLiveStamp() {
+  $('stamp-title').style.display = settings.showAddress ? '' : 'none';
+  $('stamp-flag').style.display = settings.showAddress && settings.showFlag && geoState.flag ? '' : 'none';
+  $('stamp-address').style.display = settings.showAddress ? '' : 'none';
+  $('stamp-coords').style.display = settings.showCoords ? '' : 'none';
+  $('stamp-datetime').style.display = settings.showDatetime ? '' : 'none';
+  $('stamp-extra').style.display = settings.showExtra ? '' : 'none';
+  $('stamp-map').style.display = settings.showMap ? '' : 'none';
+  $('stamp-logo').style.display = settings.customText ? '' : 'none';
+  $('stamp-badge-row').style.display = settings.showBadge ? '' : 'none';
+  $('stamp-map-brand').textContent = settings.mapStyle === 'satellite' ? 'Esri' : 'OSM';
+
+  $('stamp-title').textContent = geoState.title;
+  $('stamp-flag').textContent = geoState.flag;
+  const plusPrefix = settings.showPlusCode && geoState.plusCode ? `${geoState.plusCode}, ` : '';
+  $('stamp-address').textContent = plusPrefix + (geoState.addrLine || geoState.address);
+  $('stamp-coords').textContent = formatCoords();
+  $('stamp-extra').textContent = formatExtra();
+  $('stamp-datetime').textContent = formatDatetime(new Date());
+  $('stamp-logo').textContent = settings.customText;
+}
+setInterval(updateLiveStamp, 1000);
+
+let liveMapUpdatedAt = 0;
+function updateLiveMapThumb() {
+  if (!settings.showMap || geoState.lat === null) return;
+  const now = Date.now();
+  if (now - liveMapUpdatedAt < 4000) return; // throttle tile requests
+  liveMapUpdatedAt = now;
+  const mapEl = $('stamp-map');
+  let img = mapEl.querySelector('img');
+  if (!img) {
+    img = document.createElement('img');
+    mapEl.insertBefore(img, mapEl.firstChild);
+  }
+  img.src = tileUrlForPoint(geoState.lat, geoState.lon, settings.mapStyle, 16).url;
+}
+
+/* --------------------------- map tile math / URLs --------------------------- */
+function lonLatToTilePixel(lon, lat, zoom) {
+  const latRad = (lat * Math.PI) / 180;
+  const n = Math.pow(2, zoom);
+  const x = ((lon + 180) / 360) * n;
+  const y = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n;
+  const tileX = Math.floor(x);
+  const tileY = Math.floor(y);
+  return { tileX, tileY, px: (x - tileX) * 256, py: (y - tileY) * 256 };
+}
+function tileUrlForPoint(lat, lon, style, zoom) {
+  const t = lonLatToTilePixel(lon, lat, zoom);
+  let url;
+  if (style === 'satellite') {
+    url = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${t.tileY}/${t.tileX}`;
+  } else {
+    const sub = ['a', 'b', 'c'][(t.tileX + t.tileY) % 3];
+    url = `https://${sub}.tile.openstreetmap.org/${zoom}/${t.tileX}/${t.tileY}.png`;
+  }
+  return { url, px: t.px, py: t.py };
+}
+
+/* ------------------------------- camera setup ------------------------------- */
+let mediaStream = null;
+let currentFacing = 'environment';
+
+async function startCamera(facing = currentFacing) {
+  stopCamera();
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+    $('video').srcObject = mediaStream;
+    currentFacing = facing;
+    $('start-hint').classList.add('hidden');
+  } catch (e) {
+    toast('Camera access failed: ' + e.message, 4000);
+    $('start-hint').classList.remove('hidden');
+  }
+}
+function stopCamera() {
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+  }
+}
+
+/* --------------------------------- capture ---------------------------------- */
+let lastCaptureDataUrl = null;
+
+async function tryLoadCorsImage(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+    setTimeout(() => resolve(null), 4000); // don't block capture forever
+  });
+}
+
+// Draw "Google"-style per-letter... no: draw our OWN small brand label
+// (OSM/Esri, whichever tile source is actually powering the thumbnail) in
+// the bottom-left corner of the map thumbnail, same spot real geotag-camera
+// apps put their map-provider watermark.
+function drawMapBrand(ctx, x, y, scale) {
+  const label = settings.mapStyle === 'satellite' ? 'Esri' : 'OSM';
+  ctx.save();
+  ctx.font = `700 ${15 * scale}px sans-serif`;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = 'rgba(0,0,0,.55)';
+  ctx.fillText(label, x + 1, y + 1);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(label, x, y);
+  ctx.restore();
+}
+
+function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
+  // Size everything relative to the actual photo width so the stamp reads
+  // clearly regardless of the camera's capture resolution — the map
+  // thumbnail lands around ~20% of the photo width, matching a typical
+  // geotag-camera stamp.
+  const scale = W / 900;
+  const pad = 30 * scale;
+  const mapSize = 190 * scale;
+  const lineGap = 42 * scale;
+
+  // work out how many text lines will actually render, so the bar height fits
+  let lines = 0;
+  if (settings.showAddress) lines += 1.4; // title (can wrap)
+  if (settings.showAddress && settings.showFlag && geoState.flag) lines += 0.75;
+  if (settings.showAddress) lines += 1; // address/plus-code line
+  if (settings.showCoords) lines += 1;
+  if (settings.showExtra && formatExtra()) lines += 0.85;
+  if (settings.showDatetime) lines += 1;
+  if (settings.customText) lines += 0.85;
+  const contentH = Math.max(lines * lineGap, settings.showMap ? mapSize : 40 * scale);
+  const badgeH = settings.showBadge ? 40 * scale : 0;
+  const barH = contentH + pad * 1.3 + badgeH;
+
+  ctx.save();
+  if (settings.theme !== 'minimal') {
+    const grad = ctx.createLinearGradient(0, H - barH, 0, H);
+    if (settings.theme === 'light') {
+      grad.addColorStop(0, 'rgba(255,255,255,0)');
+      grad.addColorStop(1, 'rgba(255,255,255,0.9)');
+    } else {
+      grad.addColorStop(0, 'rgba(0,0,0,0)');
+      grad.addColorStop(1, 'rgba(0,0,0,0.76)');
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, H - barH, W, barH);
+  }
+
+  const textColor = settings.theme === 'light' ? '#0f172a' : '#ffffff';
+  const contentTop = H - barH + pad * 0.7 + badgeH;
+
+  // ---- badge (top-right, "📍 GeoCam") ----
+  if (settings.showBadge) {
+    const badgeText = 'GeoCam';
+    ctx.font = `700 ${17 * scale}px sans-serif`;
+    const tw = ctx.measureText(badgeText).width;
+    const bw = tw + 48 * scale, bh = 32 * scale;
+    const bx = W - pad - bw, by = H - barH + pad * 0.55;
+    ctx.fillStyle = 'rgba(255,255,255,.16)';
+    const r = bh / 2;
+    ctx.beginPath();
+    ctx.moveTo(bx + r, by);
+    ctx.arcTo(bx + bw, by, bx + bw, by + bh, r);
+    ctx.arcTo(bx + bw, by + bh, bx, by + bh, r);
+    ctx.arcTo(bx, by + bh, bx, by, r);
+    ctx.arcTo(bx, by, bx + bw, by, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `${18 * scale}px sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText('📍', bx + 11 * scale, by + bh / 2 + 1);
+    ctx.font = `700 ${17 * scale}px sans-serif`;
+    ctx.fillText(badgeText, bx + 31 * scale, by + bh / 2 + 1);
+  }
+
+  let textX = pad;
+  const mapTop = contentTop + (contentH - mapSize) / 2;
+  if (settings.showMap) {
+    const mx = pad, my = Math.max(contentTop, mapTop);
+    ctx.save();
+    ctx.beginPath();
+    const r = 16 * scale;
+    ctx.moveTo(mx + r, my);
+    ctx.arcTo(mx + mapSize, my, mx + mapSize, my + mapSize, r);
+    ctx.arcTo(mx + mapSize, my + mapSize, mx, my + mapSize, r);
+    ctx.arcTo(mx, my + mapSize, mx, my, r);
+    ctx.arcTo(mx, my, mx + mapSize, my, r);
+    ctx.closePath();
+    ctx.clip();
+    if (mapImg) {
+      const s = mapSize;
+      ctx.drawImage(mapImg, mapPx - s / 2, mapPy - s / 2, s, s, mx, my, mapSize, mapSize);
+    } else {
+      ctx.fillStyle = '#274b6d';
+      ctx.fillRect(mx, my, mapSize, mapSize);
+      ctx.strokeStyle = 'rgba(255,255,255,.25)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 3; i++) {
+        ctx.beginPath(); ctx.moveTo(mx, my + (mapSize / 3) * i); ctx.lineTo(mx + mapSize, my + (mapSize / 3) * i); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(mx + (mapSize / 3) * i, my); ctx.lineTo(mx + (mapSize / 3) * i, my + mapSize); ctx.stroke();
+      }
+    }
+    // pin
+    ctx.fillStyle = '#ef4444';
+    ctx.beginPath();
+    ctx.arc(mx + mapSize / 2, my + mapSize / 2 - 10 * scale, 13 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5 * scale; ctx.stroke();
+    drawMapBrand(ctx, mx + 8 * scale, my + mapSize - 10 * scale, scale);
+    ctx.restore();
+    textX = mx + mapSize + pad * 0.8;
+  }
+
+  ctx.fillStyle = textColor;
+  ctx.textBaseline = 'top';
+  let y = contentTop;
+
+  if (settings.showAddress) {
+    ctx.font = `800 ${34 * scale}px sans-serif`;
+    const wrapped = wrapText(ctx, geoState.title, textX, y, W - textX - pad, lineGap);
+    y += lineGap * wrapped;
+    if (settings.showFlag && geoState.flag) {
+      ctx.font = `${26 * scale}px sans-serif`;
+      ctx.fillText(geoState.flag, textX, y);
+      y += lineGap * 0.8;
+    }
+  }
+  ctx.font = `500 ${25 * scale}px sans-serif`;
+  if (settings.showAddress) {
+    const plusPrefix = settings.showPlusCode && geoState.plusCode ? `${geoState.plusCode}, ` : '';
+    ctx.fillText(plusPrefix + (geoState.addrLine || geoState.address), textX, y);
+    y += lineGap * 0.85;
+  }
+  if (settings.showCoords) { ctx.fillText(formatCoords(), textX, y); y += lineGap * 0.85; }
+  if (settings.showExtra && formatExtra()) { ctx.font = `400 ${21 * scale}px sans-serif`; ctx.fillText(formatExtra(), textX, y); y += lineGap * 0.8; }
+  ctx.font = `500 ${25 * scale}px sans-serif`;
+  if (settings.showDatetime) { ctx.fillText(formatDatetime(new Date()), textX, y); y += lineGap * 0.85; }
+  if (settings.customText) { ctx.font = `italic 400 ${21 * scale}px sans-serif`; ctx.fillText(settings.customText, textX, y); }
+
+  ctx.restore();
+}
+// Wraps text to at most 2 lines, drawing it and returning how many lines were used.
+function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = String(text || '').split(' ');
+  let line = '', lines = 0;
+  for (let i = 0; i < words.length; i++) {
+    const test = line + words[i] + ' ';
+    if (ctx.measureText(test).width > maxWidth && line) {
+      ctx.fillText(line.trim(), x, y + lines * lineHeight);
+      line = words[i] + ' ';
+      lines++;
+      if (lines >= 2) { ctx.fillText(line.trim() + '…', x, y + lines * lineHeight); return lines + 1; }
+    } else {
+      line = test;
+    }
+  }
+  ctx.fillText(line.trim(), x, y + lines * lineHeight);
+  return lines + 1;
+}
+
+async function capturePhoto() {
+  const video = $('video');
+  if (!video.videoWidth) { toast('Camera not ready yet'); return; }
+  const canvas = $('hidden-canvas');
+  const W = video.videoWidth, H = video.videoHeight;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // mirror front camera for a natural-looking result
+  if (currentFacing === 'user') {
+    ctx.translate(W, 0); ctx.scale(-1, 1);
+  }
+  ctx.drawImage(video, 0, 0, W, H);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  let mapImg = null, mapPx = 0, mapPy = 0;
+  if (settings.showMap && geoState.lat !== null) {
+    const t = tileUrlForPoint(geoState.lat, geoState.lon, settings.mapStyle, 16);
+    mapPx = t.px; mapPy = t.py;
+    mapImg = await tryLoadCorsImage(t.url);
+  }
+
+  drawStampBar(ctx, W, H, mapImg, mapPx, mapPy);
+
+  const quality = parseFloat(settings.quality);
+  try {
+    lastCaptureDataUrl = canvas.toDataURL('image/jpeg', quality);
+  } catch (secErr) {
+    // canvas got tainted by a non-CORS map tile — redraw without the map image
+    ctx.clearRect(0, 0, W, H);
+    if (currentFacing === 'user') { ctx.translate(W, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(video, 0, 0, W, H);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    drawStampBar(ctx, W, H, null, 0, 0);
+    lastCaptureDataUrl = canvas.toDataURL('image/jpeg', quality);
+  }
+
+  $('preview-img').src = lastCaptureDataUrl;
+  showScreen('preview-screen');
+}
+
+/* --------------------------------- storage ---------------------------------- */
+let db = null;
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('geocam_db', 1);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      if (!d.objectStoreNames.contains('photos')) {
+        d.createObjectStore('photos', { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    req.onsuccess = () => { db = req.result; resolve(db); };
+    req.onerror = () => reject(req.error);
+  });
+}
+function savePhotoToGallery(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('photos', 'readwrite');
+    tx.objectStore('photos').add({ dataUrl, ts: Date.now() });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function getAllPhotos() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('photos', 'readonly');
+    const req = tx.objectStore('photos').getAll();
+    req.onsuccess = () => resolve(req.result.sort((a, b) => b.ts - a.ts));
+    req.onerror = () => reject(req.error);
+  });
+}
+function deletePhoto(id) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('photos', 'readwrite');
+    tx.objectStore('photos').delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [meta, b64] = dataUrl.split(',');
+  const mime = meta.match(/:(.*?);/)[1];
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+function downloadDataUrl(dataUrl, filename) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+async function shareDataUrl(dataUrl, filename) {
+  if (navigator.canShare && navigator.share) {
+    try {
+      const blob = dataUrlToBlob(dataUrl);
+      const file = new File([blob], filename, { type: blob.type });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'GeoCam photo' });
+        return;
+      }
+    } catch (e) { /* fall through to download */ }
+  }
+  downloadDataUrl(dataUrl, filename);
+  toast('Share not supported here — downloaded instead');
+}
+
+async function refreshGallery() {
+  const photos = await getAllPhotos();
+  const grid = $('gallery-grid');
+  grid.innerHTML = '';
+  $('gallery-empty').style.display = photos.length ? 'none' : 'block';
+  photos.forEach((p) => {
+    const div = document.createElement('div');
+    div.className = 'g-item';
+    const img = document.createElement('img');
+    img.src = p.dataUrl;
+    div.appendChild(img);
+    div.addEventListener('click', () => openViewer(p));
+    grid.appendChild(div);
+  });
+  // thumbnail on the camera screen's gallery button
+  if (photos[0]) $('btn-gallery').style.backgroundImage = `url('${photos[0].dataUrl}')`;
+}
+
+let viewerCurrent = null;
+function openViewer(photo) {
+  viewerCurrent = photo;
+  $('viewer-img').src = photo.dataUrl;
+  showScreen('viewer-screen');
+}
+
+/* ---------------------------------- events ----------------------------------- */
+function bindEvents() {
+  $('btn-start').addEventListener('click', async () => {
+    await startCamera();
+    startGeolocation();
+  });
+  $('btn-flip').addEventListener('click', () => startCamera(currentFacing === 'environment' ? 'user' : 'environment'));
+  $('btn-capture').addEventListener('click', capturePhoto);
+  $('btn-flash').addEventListener('click', () => {
+    settings.showGrid = !settings.showGrid;
+    saveSettings();
+    $('grid-overlay').classList.toggle('hidden', !settings.showGrid);
+    $('opt-show-grid').checked = settings.showGrid;
+  });
+
+  $('btn-settings').addEventListener('click', () => { applySettingsToForm(); showScreen('settings-screen'); });
+  $('btn-settings-close').addEventListener('click', () => showScreen('camera-screen'));
+
+  $('btn-gallery').addEventListener('click', async () => { await refreshGallery(); showScreen('gallery-screen'); });
+  $('btn-gallery-close').addEventListener('click', () => showScreen('camera-screen'));
+
+  $('btn-discard').addEventListener('click', () => { lastCaptureDataUrl = null; showScreen('camera-screen'); });
+  $('btn-save').addEventListener('click', async () => {
+    if (!lastCaptureDataUrl) return;
+    await savePhotoToGallery(lastCaptureDataUrl);
+    downloadDataUrl(lastCaptureDataUrl, `geocam_${Date.now()}.jpg`);
+    toast('Photo saved');
+    showScreen('camera-screen');
+  });
+  $('btn-share').addEventListener('click', () => lastCaptureDataUrl && shareDataUrl(lastCaptureDataUrl, `geocam_${Date.now()}.jpg`));
+
+  $('btn-viewer-close').addEventListener('click', () => showScreen('gallery-screen'));
+  $('btn-viewer-save').addEventListener('click', () => viewerCurrent && downloadDataUrl(viewerCurrent.dataUrl, `geocam_${viewerCurrent.ts}.jpg`));
+  $('btn-viewer-share').addEventListener('click', () => viewerCurrent && shareDataUrl(viewerCurrent.dataUrl, `geocam_${viewerCurrent.ts}.jpg`));
+  $('btn-viewer-delete').addEventListener('click', async () => {
+    if (!viewerCurrent) return;
+    await deletePhoto(viewerCurrent.id);
+    toast('Photo deleted');
+    showScreen('gallery-screen');
+    refreshGallery();
+  });
+}
+
+/* ----------------------------------- init ------------------------------------- */
+async function init() {
+  applySettingsToForm();
+  bindSettingsForm();
+  bindEvents();
+  updateLiveStamp();
+  try { await openDb(); } catch (e) { console.warn('IndexedDB unavailable', e); }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('service-worker.js').catch(() => {});
+  }
+
+  // Try to auto-start; browsers that need a user gesture will fall back to the button.
+  try {
+    await startCamera();
+    startGeolocation();
+  } catch (e) {
+    $('start-hint').classList.remove('hidden');
+  }
+}
+init();
