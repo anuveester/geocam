@@ -359,9 +359,10 @@ function updateLiveStamp() {
   $('stamp-datetime').textContent = formatDatetime(new Date());
   $('stamp-logo').textContent = settings.customText;
 
-  // Grey out the shutter until we actually have a GPS fix, so you can't
-  // accidentally bake a blank/"Locating…" stamp into a photo.
-  $('btn-capture').classList.toggle('waiting', geoState.lat === null);
+  // Grey out the shutter until we actually have a GPS fix, or while the
+  // camera is mid-restart after a rotation — so you can't accidentally bake
+  // a blank/"Locating…" stamp, or a stale rotated frame, into a photo.
+  $('btn-capture').classList.toggle('waiting', geoState.lat === null || cameraSettling);
 }
 setInterval(updateLiveStamp, 1000);
 
@@ -421,6 +422,30 @@ function idealCameraDims() {
     : { width: { ideal: 1080 }, height: { ideal: 1920 } };
 }
 
+// Waits for the <video> element to report real pixel dimensions for the
+// CURRENT stream. Right after srcObject is assigned, videoWidth/videoHeight
+// can briefly still be 0 (or hold a stale value from the previous stream)
+// until the browser decodes the first frame — capturing during that window
+// is exactly how a rotated/mismatched photo slips through, so every caller
+// that needs a trustworthy frame awaits this instead of assuming srcObject
+// being set means the stream is actually ready.
+function waitForVideoReady(video, timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    if (video.videoWidth > 0 && video.videoHeight > 0) { resolve(); return; }
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      video.removeEventListener('loadedmetadata', onReady);
+      clearTimeout(timer);
+      resolve();
+    };
+    const onReady = () => finish();
+    video.addEventListener('loadedmetadata', onReady);
+    const timer = setTimeout(finish, timeoutMs); // don't hang forever if the event never fires
+  });
+}
+
 async function startCamera(facing = currentFacing) {
   stopCamera();
   try {
@@ -428,9 +453,11 @@ async function startCamera(facing = currentFacing) {
       video: { facingMode: { ideal: facing }, ...idealCameraDims() },
       audio: false,
     });
-    $('video').srcObject = mediaStream;
+    const video = $('video');
+    video.srcObject = mediaStream;
     currentFacing = facing;
     $('start-hint').classList.add('hidden');
+    await waitForVideoReady(video);
   } catch (e) {
     toast('Camera access failed: ' + e.message, 4000);
     $('start-hint').classList.remove('hidden');
@@ -445,17 +472,33 @@ function stopCamera() {
 
 // A camera stream's resolution is fixed at the moment it's opened — turning
 // the phone after that doesn't make the browser renegotiate it on its own.
-// So after a rotation, restart the stream (once things settle) so the new
+// So after a rotation we restart the stream so the new
 // video.videoWidth/videoHeight — and therefore the captured photo — actually
-// match the orientation you're holding the phone in when you tap capture.
+// match the orientation you're holding the phone in.
+//
+// The first version of this fix just fired the restart after a timer and
+// assumed it would be done in time. In practice you can rotate the phone
+// and tap the shutter faster than that restart finishes, which captured a
+// frame from the OLD (now-mismatched) stream — a landscape-shaped photo
+// with the scene still rotated inside it, exactly the bug you saw. So now
+// `cameraSettling` is held true for the *entire* window from the moment a
+// rotation is detected until the new stream is confirmed ready, and
+// capturePhoto() below refuses to shoot while it's true.
 let orientationRestartTimer = null;
+let cameraSettling = false;
 function handleOrientationChange() {
   if (!mediaStream) return;
+  cameraSettling = true;
+  updateLiveStamp();
   clearTimeout(orientationRestartTimer);
-  orientationRestartTimer = setTimeout(() => {
+  orientationRestartTimer = setTimeout(async () => {
     const cam = $('camera-screen');
-    if (cam && cam.classList.contains('active')) startCamera(currentFacing);
-  }, 400);
+    if (cam && cam.classList.contains('active')) {
+      await startCamera(currentFacing);
+    }
+    cameraSettling = false;
+    updateLiveStamp();
+  }, 250); // small debounce so a fast rotation only restarts the stream once
 }
 window.addEventListener('orientationchange', handleOrientationChange);
 window.addEventListener('resize', handleOrientationChange);
@@ -671,8 +714,24 @@ function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
 async function capturePhoto() {
   const video = $('video');
   if (!video.videoWidth) { toast('Camera not ready yet'); return; }
+  if (cameraSettling) {
+    toast('Still adjusting the camera to the new orientation — hold still a moment and try again', 2400);
+    return;
+  }
   if (geoState.lat === null) {
     toast('Still finding your GPS location — move near a window or outdoors and try again', 3200);
+    return;
+  }
+  // Final safety check: the stream is settled and the browser thinks it's
+  // ready, but make sure the frame we're about to capture actually matches
+  // how the phone is physically being held right now. If a rotation event
+  // was somehow missed (e.g. very fast double-rotation), this refuses the
+  // shot instead of silently baking in a mismatched frame.
+  const frameLandscape = video.videoWidth > video.videoHeight;
+  const viewportLandscape = window.innerWidth > window.innerHeight;
+  if (frameLandscape !== viewportLandscape) {
+    toast('Camera orientation hasn’t caught up yet — try again in a second', 2400);
+    handleOrientationChange();
     return;
   }
   const canvas = $('hidden-canvas');
