@@ -6,7 +6,7 @@
 // land. This version fetches from the network FIRST (so you always get the
 // latest files the moment you reopen the app while online) and only falls
 // back to the cached copy if you're offline.
-const CACHE_NAME = 'geocam-cache-v6';
+const CACHE_NAME = 'geocam-cache-v9';
 const CORE_ASSETS = [
   './index.html',
   './style.css',

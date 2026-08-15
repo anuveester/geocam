@@ -10,7 +10,7 @@
 // Shown in Settings. If this number doesn't match the latest build you
 // uploaded, your phone is still running an older cached copy of app.js —
 // which looks exactly like "the fix didn't work".
-const APP_BUILD = 9;
+const APP_BUILD = 12;
 const $ = (id) => document.getElementById(id);
 let toastTimer = null;
 function toast(msg, ms = 2200) {
@@ -214,6 +214,7 @@ function updateDiagnostics() {
     `rotation set   : ${settings.photoRotation || 'auto'}`,
     `=> will rotate  : ${effectiveRotation()}°`,
     `=> photo will be: ${wantLandscapePhoto() ? 'LANDSCAPE' : 'PORTRAIT'}`,
+    `zoom           : ${currentZoom.toFixed(1)}x (digital — 1x is always the untouched native stream)`,
   ];
   el.textContent = rows.join('\n');
 }
@@ -569,19 +570,79 @@ function tileUrlForPoint(lat, lon, style, zoom) {
 let mediaStream = null;
 let currentFacing = 'environment';
 
-// The app used to be orientation-locked to portrait (manifest.json), which
-// pinned the screen so it never rotated even when you physically turned the
-// phone sideways — the camera sensor rotated with your hand, but the video
-// stream we asked for (and the screen showing it) didn't, so a "landscape"
-// shot came out portrait-shaped with the scene rotated inside it. The app
-// is no longer orientation-locked, so we now ask for stream dimensions that
-// match however the phone is currently held, matching what portrait capture
-// already did correctly.
+/* ---------------------------------- zoom -----------------------------------
+   The first version of this tried hardware zoom (MediaTrackConstraints'
+   `zoom`) when a camera reported support for it, on the theory that it'd
+   give better quality than a digital crop. That backfired: a device's
+   reported zoom.min isn't guaranteed to actually BE "1x, no zoom" — it's
+   whatever the platform's driver happens to call its floor, and on this
+   phone touching that API at all — even to request the reported minimum —
+   pushed BOTH cameras in visibly zoomed, not just the front one like
+   before. There's no reliable way to ask "give me the true native FOV"
+   through that API, so it's not used anymore.
+   Zoom is now ALWAYS digital and identical on both cameras: 1x means the
+   camera stream is never touched by any zoom constraint at all — scale(1)
+   is a no-op, so it's guaranteed pixel-identical to a plain, unzoomed
+   stream. Above 1x, the live preview is scaled with CSS and the saved
+   photo is produced by cropping a smaller, centred region out of the full
+   frame before drawing — the standard "zoom by cropping tighter" every
+   camera app falls back to when it doesn't have optical zoom. */
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 4;
+
+let currentZoom = 1;
+
+function applyZoom(value) {
+  currentZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, value));
+  // scale(1) at the minimum is a genuine no-op — nothing about the video
+  // element or the underlying stream is touched, so 1x is always exactly
+  // what the camera's native stream looks like.
+  $('video').style.transform = currentZoom === 1 ? '' : `scale(${currentZoom})`;
+  updateZoomUI();
+}
+
+function updateZoomUI() {
+  const slider = $('opt-zoom'), label = $('zoom-level');
+  if (!slider) return;
+  slider.min = ZOOM_MIN; slider.max = ZOOM_MAX; slider.step = 0.1;
+  slider.value = currentZoom;
+  if (label) label.textContent = `${currentZoom.toFixed(1)}x`;
+}
+
+// THE REAL ROOT CAUSE of "camera is zoomed in by default" (both cameras,
+// present since before any zoom-control code existed) was here, not in the
+// zoom code. This used to change its requested width/height to match the
+// phone's current portrait/landscape orientation (e.g. asking for a tall
+// 1080x1920 "ideal" frame in portrait). That coupling was never necessary —
+// capturePhoto() already rotates and crops whatever raw shape the camera
+// hands back to match the screen (see effectiveRotation() and the "upright"
+// canvas step below), and the live preview does the same visually via
+// `object-fit: cover`. So the requested ideal never needed to track screen
+// orientation at all.
+//
+// Worse, asking for a narrow ideal aspect ratio that doesn't match a
+// camera's NATIVE widest field-of-view mode pushes the browser's constraint
+// negotiation to pick a pre-cropped resolution instead of the sensor's full
+// view. This hits front (selfie) cameras hardest: many are natively 16:9
+// (e.g. 1920x1080 is their widest mode), but a portrait "ideal" of
+// 1080x1920 is closer in shape to a cropped 4:3 mode (e.g. 1280x960), so
+// the browser silently picks that narrower, already-cropped mode — which
+// looks exactly like the camera being zoomed in compared to the phone's own
+// camera app. This is why the front camera looked "zoomed by default" from
+// the very first report, and why none of the zoom-control fixes (which only
+// ever touched CSS scale / capture-time crop) could have fixed it — the FOV
+// was already lost upstream, before a single frame reached our code.
+//
+// Fix: ask for a generously large SQUARE ideal (equal width & height, not
+// tied to orientation). Because it doesn't favour any particular aspect
+// ratio, the browser's constraint algorithm ends up picking each camera's
+// natural widest-FOV mode at a healthy resolution instead of a cropped one
+// — verified against real Android supported-resolution lists in
+// /tmp/fitness_test.js (both a 4:3 rear sensor and a 16:9 front sensor
+// landed on their true widest mode with this constraint, where the old
+// orientation-tied ideal did not).
 function idealCameraDims() {
-  const landscape = window.innerWidth > window.innerHeight;
-  return landscape
-    ? { width: { ideal: 1920 }, height: { ideal: 1080 } }
-    : { width: { ideal: 1080 }, height: { ideal: 1920 } };
+  return { width: { ideal: 2560 }, height: { ideal: 2560 } };
 }
 
 // Waits for the <video> element to report real pixel dimensions for the
@@ -620,6 +681,13 @@ async function startCamera(facing = currentFacing) {
     currentFacing = facing;
     $('start-hint').classList.add('hidden');
     await waitForVideoReady(video);
+
+    // Re-apply the current digital zoom to the fresh stream's live preview
+    // (currentZoom is intentionally NOT reset here — only the flip button
+    // resets it — so a rotation restart doesn't silently snap your zoom
+    // back to 1x mid-shot). This never touches the camera hardware itself,
+    // only the CSS scale on the <video> element, so it's always exact.
+    applyZoom(currentZoom);
   } catch (e) {
     toast('Camera access failed: ' + e.message, 4000);
     $('start-hint').classList.remove('hidden');
@@ -971,6 +1039,17 @@ async function capturePhoto() {
     sy = (effH - sh) / 2;
   }
 
+  // Digital zoom: the raw frame is always the camera's full, un-zoomed
+  // field of view — the live preview only LOOKS zoomed in because of a CSS
+  // scale on the video element. To make the saved photo match that, crop
+  // tighter around the same centre point before drawing, by the same factor.
+  if (currentZoom > 1) {
+    const zsw = sw / currentZoom, zsh = sh / currentZoom;
+    sx += (sw - zsw) / 2;
+    sy += (sh - zsh) / 2;
+    sw = zsw; sh = zsh;
+  }
+
   // Keep the exported resolution close to the sensor's native pixel count
   // rather than shrinking it down to the (much smaller) CSS box size.
   let W, H;
@@ -1115,8 +1194,15 @@ function bindEvents() {
     startGeolocation();
     startTiltSensing();   // iOS only grants motion access from a user gesture
   });
-  $('btn-flip').addEventListener('click', () => startCamera(currentFacing === 'environment' ? 'user' : 'environment'));
+  $('btn-flip').addEventListener('click', () => {
+    currentZoom = 1; // front/back cameras have different natural field of view — start fresh
+    startCamera(currentFacing === 'environment' ? 'user' : 'environment');
+  });
   $('btn-capture').addEventListener('click', capturePhoto);
+  $('opt-zoom').addEventListener('input', (e) => applyZoom(parseFloat(e.target.value)));
+  document.querySelectorAll('.zoom-chip').forEach((chip) => {
+    chip.addEventListener('click', () => applyZoom(parseFloat(chip.dataset.zoom)));
+  });
   $('btn-flash').addEventListener('click', () => {
     settings.showGrid = !settings.showGrid;
     saveSettings();

@@ -56,6 +56,19 @@
       <button id="btn-flip" class="icon-btn" aria-label="Flip camera">🔄</button>
     </div>
 
+    <!-- zoom control — works on both front and rear camera; uses hardware
+         zoom when the camera supports it, otherwise a CSS/crop-based digital
+         zoom so it's never just missing on cameras without hardware zoom. -->
+    <div class="zoom-bar">
+      <div class="zoom-chips">
+        <button type="button" class="zoom-chip" data-zoom="1">1x</button>
+        <button type="button" class="zoom-chip" data-zoom="2">2x</button>
+        <button type="button" class="zoom-chip" data-zoom="3">3x</button>
+      </div>
+      <input type="range" id="opt-zoom" min="1" max="4" step="0.1" value="1" aria-label="Zoom" />
+      <span id="zoom-level" class="zoom-level">1.0x</span>
+    </div>
+
     <!-- bottom controls -->
     <div class="bottombar">
       <button id="btn-gallery" class="thumb-btn" aria-label="Gallery"></button>
