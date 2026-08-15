@@ -722,18 +722,6 @@ async function capturePhoto() {
     toast('Still finding your GPS location — move near a window or outdoors and try again', 3200);
     return;
   }
-  // Final safety check: the stream is settled and the browser thinks it's
-  // ready, but make sure the frame we're about to capture actually matches
-  // how the phone is physically being held right now. If a rotation event
-  // was somehow missed (e.g. very fast double-rotation), this refuses the
-  // shot instead of silently baking in a mismatched frame.
-  const frameLandscape = video.videoWidth > video.videoHeight;
-  const viewportLandscape = window.innerWidth > window.innerHeight;
-  if (frameLandscape !== viewportLandscape) {
-    toast('Camera orientation hasn’t caught up yet — try again in a second', 2400);
-    handleOrientationChange();
-    return;
-  }
   const canvas = $('hidden-canvas');
   const W = video.videoWidth, H = video.videoHeight;
   canvas.width = W; canvas.height = H;
