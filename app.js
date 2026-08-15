@@ -10,7 +10,7 @@
 // Shown in Settings. If this number doesn't match the latest build you
 // uploaded, your phone is still running an older cached copy of app.js —
 // which looks exactly like "the fix didn't work".
-const APP_BUILD = 8;
+const APP_BUILD = 9;
 const $ = (id) => document.getElementById(id);
 let toastTimer = null;
 function toast(msg, ms = 2200) {
@@ -776,10 +776,17 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
         ctx.beginPath(); ctx.moveTo(mx + (mapW / 3) * i, my); ctx.lineTo(mx + (mapW / 3) * i, my + mapSize); ctx.stroke();
       }
     }
-    // pin
+    // pin — drawn dead-centre of the box, exactly where the map image was
+    // cropped around (mapPx, mapPy) so it lines up with the true GPS point.
+    // This used to be offset 10*scale px upward (a leftover from an earlier
+    // teardrop-shaped pin icon whose pointed tip needed to touch the exact
+    // spot), but this is a plain circle with no tip, so that offset just
+    // pushed the dot off the real location — which is the "map point moves
+    // up when you capture" bug. Matches the live preview too, which centres
+    // the pin with no offset.
     ctx.fillStyle = '#ef4444';
     ctx.beginPath();
-    ctx.arc(mx + mapW / 2, my + mapSize / 2 - 10 * scale, 13 * scale, 0, Math.PI * 2);
+    ctx.arc(mx + mapW / 2, my + mapSize / 2, 13 * scale, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5 * scale; ctx.stroke();
     drawMapBrand(ctx, mx + 8 * scale, my + mapSize - 10 * scale, scale);
@@ -801,76 +808,97 @@ function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
   ctx.textBaseline = 'top';
   const innerX = boxX + boxPad;
 
-  // The box height is now a fixed 25% of the photo — vertically center the
-  // text block inside it (rather than always hugging the top), so a short
-  // address doesn't leave a slab of empty space at the bottom of the card.
-  let estLines = 0;
-  if (settings.showAddress) estLines += 1.4;
-  if (settings.showAddress && settings.showFlag && geoState.flag) estLines += 0.75;
-  if (settings.showAddress) estLines += 1;
-  if (settings.showCoords) estLines += 1;
-  if (settings.showExtra && formatExtra()) estLines += 0.85;
-  if (settings.showDatetime) estLines += 1;
-  if (settings.customText) estLines += 0.85;
-  const estContentH = estLines * lineGap;
+  // Every field wraps onto as many lines as it needs instead of being cut
+  // off with an ellipsis — a long address or full Plus Code now prints in
+  // full rather than "…"-truncated. Because that means we don't know the
+  // line count up front, this is a two-pass build: first measure every
+  // field's wrapped lines (with its own font, since each field's size
+  // differs), then vertically center the WHOLE block using the real total
+  // height, then actually draw it. If everything still doesn't fit the
+  // fixed-height box even after wrapping (a very long address), we shrink
+  // the text size and re-wrap rather than letting the box clip lose it —
+  // "print all the text" wins over a fixed font size.
+  const innerMaxW = boxW - boxPad * 2;
   const availH = boxH - boxPad * 2;
+
+  function buildBlocks(sh) {
+    const b = []; // { lines, font, lineH }
+    if (settings.showAddress) {
+      ctx.font = `800 ${32 * scale * sh}px sans-serif`;
+      b.push({ lines: wrapTextLines(ctx, resolvedTitle(), innerMaxW), font: ctx.font, lineH: lineGap * sh });
+      if (settings.showFlag && geoState.flag) {
+        b.push({ lines: [geoState.flag], font: `${24 * scale * sh}px sans-serif`, lineH: lineGap * 0.8 * sh });
+      }
+      ctx.font = `500 ${23 * scale * sh}px sans-serif`;
+      const plusPrefix = settings.showPlusCode && geoState.plusCode ? `${geoState.plusCode}, ` : '';
+      b.push({ lines: wrapTextLines(ctx, plusPrefix + resolvedAddrLine(), innerMaxW), font: ctx.font, lineH: lineGap * 0.85 * sh });
+    }
+    if (settings.showCoords) {
+      ctx.font = `500 ${23 * scale * sh}px sans-serif`;
+      b.push({ lines: wrapTextLines(ctx, formatCoords(), innerMaxW), font: ctx.font, lineH: lineGap * 0.85 * sh });
+    }
+    if (settings.showExtra && formatExtra()) {
+      ctx.font = `400 ${19 * scale * sh}px sans-serif`;
+      b.push({ lines: wrapTextLines(ctx, formatExtra(), innerMaxW), font: ctx.font, lineH: lineGap * 0.8 * sh });
+    }
+    if (settings.showDatetime) {
+      ctx.font = `500 ${23 * scale * sh}px sans-serif`;
+      b.push({ lines: wrapTextLines(ctx, formatDatetime(new Date()), innerMaxW), font: ctx.font, lineH: lineGap * 0.85 * sh });
+    }
+    if (settings.customText) {
+      ctx.font = `italic 400 ${19 * scale * sh}px sans-serif`;
+      b.push({ lines: wrapTextLines(ctx, settings.customText, innerMaxW), font: ctx.font, lineH: lineGap * 0.85 * sh });
+    }
+    return b;
+  }
+  const blockHeight = (b) => b.reduce((sum, item) => sum + item.lines.length * item.lineH, 0);
+
+  let shrink = 1;
+  let blocks = buildBlocks(shrink);
+  let estContentH = blockHeight(blocks);
+  let tries = 0;
+  while (estContentH > availH && shrink > 0.55 && tries < 8) {
+    shrink *= 0.92;
+    blocks = buildBlocks(shrink);
+    estContentH = blockHeight(blocks);
+    tries++;
+  }
+
+  // The box height is a fixed 25% of the photo — vertically center the
+  // whole text block inside it (rather than always hugging the top), so
+  // short content doesn't leave a slab of empty space at the bottom.
   let y = boxTop + boxPad + Math.max(0, (availH - estContentH) / 2);
 
-  if (settings.showAddress) {
-    ctx.font = `800 ${32 * scale}px sans-serif`;
-    const wrapped = wrapText(ctx, resolvedTitle(), innerX, y, boxW - boxPad * 2, lineGap);
-    y += lineGap * wrapped;
-    if (settings.showFlag && geoState.flag) {
-      ctx.font = `${24 * scale}px sans-serif`;
-      ctx.fillText(geoState.flag, innerX, y);
-      y += lineGap * 0.8;
+  for (const b of blocks) {
+    ctx.font = b.font;
+    for (const line of b.lines) {
+      ctx.fillText(line, innerX, y);
+      y += b.lineH;
     }
   }
-  const innerMaxW = boxW - boxPad * 2;
-  ctx.font = `500 ${23 * scale}px sans-serif`;
-  if (settings.showAddress) {
-    const plusPrefix = settings.showPlusCode && geoState.plusCode ? `${geoState.plusCode}, ` : '';
-    fillTextEllipsis(ctx, plusPrefix + resolvedAddrLine(), innerX, y, innerMaxW);
-    y += lineGap * 0.85;
-  }
-  if (settings.showCoords) { fillTextEllipsis(ctx, formatCoords(), innerX, y, innerMaxW); y += lineGap * 0.85; }
-  if (settings.showExtra && formatExtra()) { ctx.font = `400 ${19 * scale}px sans-serif`; fillTextEllipsis(ctx, formatExtra(), innerX, y, innerMaxW); y += lineGap * 0.8; }
-  ctx.font = `500 ${23 * scale}px sans-serif`;
-  if (settings.showDatetime) { fillTextEllipsis(ctx, formatDatetime(new Date()), innerX, y, innerMaxW); y += lineGap * 0.85; }
-  if (settings.customText) { ctx.font = `italic 400 ${19 * scale}px sans-serif`; fillTextEllipsis(ctx, settings.customText, innerX, y, innerMaxW); }
   ctx.restore();
 
   ctx.restore();
 }
-// Draws text on one line, shortening it with an ellipsis if it's wider than maxWidth
-// (used for lines we deliberately keep single-line, unlike the wrapped title).
-function fillTextEllipsis(ctx, text, x, y, maxWidth) {
-  text = String(text || '');
-  if (ctx.measureText(text).width <= maxWidth) { ctx.fillText(text, x, y); return; }
-  let lo = 0, hi = text.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (ctx.measureText(text.slice(0, mid) + '…').width <= maxWidth) lo = mid; else hi = mid - 1;
-  }
-  ctx.fillText(text.slice(0, lo).trimEnd() + '…', x, y);
-}
-// Wraps text to at most 2 lines, drawing it and returning how many lines were used.
-function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
-  const words = String(text || '').split(' ');
-  let line = '', lines = 0;
-  for (let i = 0; i < words.length; i++) {
-    const test = line + words[i] + ' ';
-    if (ctx.measureText(test).width > maxWidth && line) {
-      ctx.fillText(line.trim(), x, y + lines * lineHeight);
-      line = words[i] + ' ';
-      lines++;
-      if (lines >= 2) { ctx.fillText(line.trim() + '…', x, y + lines * lineHeight); return lines + 1; }
+// Wraps text onto as many lines as needed to fit maxWidth — no truncation,
+// no ellipsis, no line cap. Used for every stamp field so long addresses
+// and full Plus Codes always print completely instead of being cut off.
+function wrapTextLines(ctx, text, maxWidth) {
+  const words = String(text || '').split(' ').filter(Boolean);
+  if (!words.length) return [''];
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const test = line ? line + ' ' + word : word;
+    if (line && ctx.measureText(test).width > maxWidth) {
+      lines.push(line);
+      line = word;
     } else {
       line = test;
     }
   }
-  ctx.fillText(line.trim(), x, y + lines * lineHeight);
-  return lines + 1;
+  if (line) lines.push(line);
+  return lines;
 }
 
 async function capturePhoto() {
