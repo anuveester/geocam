@@ -39,6 +39,8 @@ const DEFAULT_SETTINGS = {
   showGrid: false,
   customText: '',
   quality: '0.9',
+  marginPx: 50,     // gap from the photo's left/right/bottom edges, at a 900px-wide-equivalent baseline
+  sizeScale: 1,      // multiplier on top of that for the map/box/font sizing (1 = 100%)
 };
 
 function loadSettings() {
@@ -70,6 +72,10 @@ function applySettingsToForm() {
   $('opt-show-grid').checked = settings.showGrid;
   $('opt-custom-text').value = settings.customText;
   $('opt-quality').value = settings.quality;
+  $('opt-margin').value = settings.marginPx;
+  $('margin-value').textContent = `${settings.marginPx}px`;
+  $('opt-size-scale').value = Math.round(settings.sizeScale * 100);
+  $('size-value').textContent = `${Math.round(settings.sizeScale * 100)}%`;
 }
 
 function bindSettingsForm() {
@@ -110,6 +116,16 @@ function bindSettingsForm() {
     settings.customText = e.target.value;
     saveSettings();
     updateLiveStamp();
+  });
+  $('opt-margin').addEventListener('input', (e) => {
+    settings.marginPx = parseInt(e.target.value, 10);
+    $('margin-value').textContent = `${settings.marginPx}px`;
+    saveSettings();
+  });
+  $('opt-size-scale').addEventListener('input', (e) => {
+    settings.sizeScale = parseInt(e.target.value, 10) / 100;
+    $('size-value').textContent = `${e.target.value}%`;
+    saveSettings();
   });
 }
 
@@ -456,11 +472,15 @@ function roundedRectPath(ctx, x, y, w, h, r) {
 function drawStampBar(ctx, W, H, mapImg, mapPx, mapPy) {
   // Floating-card layout: a separate rounded map thumbnail bottom-left and a
   // separate translucent rounded text card to its right, both held off the
-  // photo edges by a fixed margin — matching a typical geotag-camera stamp,
-  // rather than a full-width bar. Sizing scales with photo width so it reads
-  // clearly regardless of the camera's capture resolution.
-  const scale = W / 900;
-  const margin = 50 * scale;   // gap from the left/right/bottom edges of the photo
+  // photo edges by a margin — matching a typical geotag-camera stamp, rather
+  // than a full-width bar. Sizing is keyed to the photo's SHORT side
+  // (min(W,H)), not just W, so a landscape capture (W > H) doesn't blow the
+  // stamp up huge relative to its own height — portrait and landscape shots
+  // both come out looking the same relative size. Margin and overall stamp
+  // size are both user-adjustable from Settings.
+  const baseScale = Math.min(W, H) / 900;
+  const scale = baseScale * (settings.sizeScale || 1);
+  const margin = (settings.marginPx || 50) * baseScale;   // gap from the left/right/bottom edges of the photo
   const gap = 18 * scale;      // gap between the map thumbnail and the text card
   const boxPad = 24 * scale;   // inner padding of the text card
   const lineGap = 40 * scale;

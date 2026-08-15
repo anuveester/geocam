@@ -1,4 +1,12 @@
-const CACHE_NAME = 'geocam-cache-v1';
+// IMPORTANT: bump this version string every time you re-upload changed files.
+// The old version of this file used a cache-FIRST strategy, which meant once
+// your phone had cached index.html/app.js/style.css once, it would keep
+// serving that same copy forever — clearing Chrome's "browsing data" doesn't
+// touch an installed home-screen PWA's storage, so updates never appeared to
+// land. This version fetches from the network FIRST (so you always get the
+// latest files the moment you reopen the app while online) and only falls
+// back to the cached copy if you're offline.
+const CACHE_NAME = 'geocam-cache-v2';
 const CORE_ASSETS = [
   './index.html',
   './style.css',
@@ -24,21 +32,21 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Cache-first for our own app shell files; network passthrough for everything
-// else (map tiles, geocoding, etc. must always be fetched live).
+// Network-first for our own app shell files, so edits show up immediately;
+// falls back to the last cached copy only when there's no network at all.
+// Map tiles / geocoding requests are left alone (always go straight to network).
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   const isOwnAsset = url.origin === self.location.origin;
-  if (!isOwnAsset) return; // let map/geocode requests go straight to network
+  if (!isOwnAsset) return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((resp) => {
+    fetch(event.request)
+      .then((resp) => {
         const clone = resp.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         return resp;
-      }).catch(() => cached);
-    })
+      })
+      .catch(() => caches.match(event.request))
   );
 });
