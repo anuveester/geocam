@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 5;
+const APP_BUILD = 6;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -31,6 +31,19 @@ function showScreen(name) {
   state.currentScreen = name;
   if (name === 'settings') updateDiagnostics();
   if (name === 'gallery') refreshGallery();
+  if (name === 'camera') {
+    // Some browsers pause/stall <video> decoding while its screen is
+    // display:none (Discard/Back from preview, Settings, Gallery, Viewer
+    // all route back here) and don't automatically resume it once visible
+    // again, leaving a blank/frozen frame until something else (like
+    // flipping the camera) forces a fresh getUserMedia call. Explicitly
+    // resuming playback here whenever the camera screen becomes active
+    // fixes that without needing a full camera restart.
+    const video = $('#video');
+    if (video && state.stream && video.paused) {
+      video.play().catch(() => {});
+    }
+  }
 }
 
 /* ---------------------------------------------------------------------
@@ -1191,7 +1204,24 @@ async function capturePhoto() {
       toast('Map thumbnail unavailable — saved without it');
     }
 
-    state.lastCapture = { dataUrl, timestamp: Date.now(), lat: pos ? pos.lat : null, lon: pos ? pos.lon : null };
+    const capture = { dataUrl, timestamp: Date.now(), lat: pos ? pos.lat : null, lon: pos ? pos.lon : null, savedId: null };
+    state.lastCapture = capture;
+
+    // Auto-save: every captured photo is saved to the in-app gallery AND
+    // downloaded to the device automatically, right away — no separate
+    // manual "Save" step required, matching how the real GPS Map Camera
+    // app this clones behaves. Awaited before showing the preview so
+    // capture.savedId is already set if the user immediately taps
+    // Discard (see its handler — it deletes this same gallery entry).
+    try {
+      capture.savedId = await savePhotoToGallery(dataUrl, { lat: capture.lat, lon: capture.lon });
+      downloadDataUrl(dataUrl, `geocam_${capture.timestamp}.jpg`);
+      toast('Photo saved');
+    } catch (e) {
+      console.warn('Auto-save failed', e);
+      toast('Capture ok, but auto-save failed — try Save on the next screen');
+    }
+
     $('#previewImg').src = dataUrl;
     showScreen('preview');
   } finally {
@@ -1219,12 +1249,16 @@ function openDb() {
   });
 }
 
+// Resolves with the new record's id (used by capturePhoto's auto-save so
+// a later Discard can remove exactly that entry again).
 async function savePhotoToGallery(dataUrl, meta) {
   const db = state.db || (state.db = await openDb());
   return new Promise((resolve, reject) => {
     const tx = db.transaction('photos', 'readwrite');
-    tx.objectStore('photos').add(Object.assign({ dataUrl, timestamp: Date.now() }, meta));
-    tx.oncomplete = () => resolve();
+    const req = tx.objectStore('photos').add(Object.assign({ dataUrl, timestamp: Date.now() }, meta));
+    let newId = null;
+    req.onsuccess = () => { newId = req.result; };
+    tx.oncomplete = () => resolve(newId);
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -1343,15 +1377,34 @@ function bindEvents() {
   $all('.zoom-chip').forEach(btn => btn.addEventListener('click', () => applyZoom(parseFloat(btn.dataset.zoom))));
   $('#zoomSlider').addEventListener('input', (e) => applyZoom(parseFloat(e.target.value)));
 
-  $('#btnDiscard').addEventListener('click', () => { state.lastCapture = null; showScreen('camera'); });
+  $('#btnDiscard').addEventListener('click', async () => {
+    // Every capture is auto-saved to the gallery already (see
+    // capturePhoto). Discard undoes that by deleting the same gallery
+    // entry. It can only remove the in-app copy though — a file the
+    // browser already downloaded to the device's system storage is
+    // outside any web app's reach to delete; that part isn't undoable.
+    const cap = state.lastCapture;
+    state.lastCapture = null;
+    showScreen('camera');
+    if (cap && cap.savedId != null) {
+      try { await deletePhoto(cap.savedId); }
+      catch (e) { console.warn('Failed to remove discarded photo from gallery', e); }
+    }
+  });
   $('#btnShare').addEventListener('click', () => {
     if (state.lastCapture) shareDataUrl(state.lastCapture.dataUrl, `geocam_${state.lastCapture.timestamp}.jpg`);
   });
   $('#btnSave').addEventListener('click', async () => {
     if (!state.lastCapture) return;
-    await savePhotoToGallery(state.lastCapture.dataUrl, { lat: state.lastCapture.lat, lon: state.lastCapture.lon });
+    // Capture already auto-saved to the gallery; avoid adding a duplicate
+    // entry if that succeeded, but always let this button re-trigger the
+    // system download (e.g. auto-save failed, or the user wants another copy).
+    if (state.lastCapture.savedId == null) {
+      try { state.lastCapture.savedId = await savePhotoToGallery(state.lastCapture.dataUrl, { lat: state.lastCapture.lat, lon: state.lastCapture.lon }); }
+      catch (e) { console.warn('Save to gallery failed', e); }
+    }
     downloadDataUrl(state.lastCapture.dataUrl, `geocam_${state.lastCapture.timestamp}.jpg`);
-    toast('Saved to gallery and downloads');
+    toast('Saved');
     showScreen('camera');
   });
 
