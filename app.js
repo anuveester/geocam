@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 3;
+const APP_BUILD = 4;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -83,12 +83,6 @@ var DEFAULT_SETTINGS = {
   showGrid: false,
   savedOrientation: 'auto',
   rotationFix: 'auto',
-  // Some Android browser/OS combinations deliver the rear-facing camera
-  // stream already horizontally mirrored (a device quirk — there is no
-  // legitimate reason for a rear camera to be mirrored, unlike a
-  // front/selfie camera). Default on: un-mirror it. If a device's rear
-  // camera is NOT mirrored to begin with, turn this off in Settings.
-  mirrorRearCamera: true,
   stampMargin: 0,
   fontScale: 1,
 };
@@ -137,7 +131,6 @@ function bindSettingsForm() {
     $('#marginVal').textContent = s.stampMargin;
     $('#fontScaleVal').textContent = Number(s.fontScale).toFixed(2);
     updateLiveStamp();
-    applyZoom(state.zoom); // refresh mirror/cover transform if mirrorRearCamera changed
     const grid = $('#gridOverlay');
     if (grid) {
       if (s.showGrid) { grid.classList.add('show'); drawGridOverlay(); }
@@ -284,7 +277,6 @@ function updateDiagnostics() {
     `Zoom: ${state.zoom.toFixed(2)}x  (range ${ZOOM_MIN}x-${ZOOM_MAX}x)`,
     `Cover/contain scale: ${state.coverScale.toFixed(3)} / ${state.containScale.toFixed(3)}`,
     `Facing: ${state.facing}`,
-    `Rear mirror fix: ${state.settings.mirrorRearCamera} (active now: ${state.facing === 'environment' && state.settings.mirrorRearCamera})`,
   ].join('\n');
 }
 
@@ -739,11 +731,9 @@ function applyZoom(z) {
   // Never shrink past "contain" — beyond that there is no more of the
   // buffer left to reveal, only wasted empty space.
   const appliedScale = Math.max(contain, cover * state.zoom);
-  // Rear-camera un-mirror fix (see mirrorFrameHorizontally): folded into
-  // the X scale here so the live preview matches what capturePhoto saves.
-  const mirror = state.facing === 'environment' && state.settings && state.settings.mirrorRearCamera;
-  const scaleX = mirror ? -appliedScale : appliedScale;
-  video.style.transform = `translate(-50%, -50%) scale(${scaleX}, ${appliedScale})`;
+  // No mirroring, ever, for either camera — always the true, un-flipped
+  // sensor view, matching exactly what capturePhoto() saves.
+  video.style.transform = `translate(-50%, -50%) scale(${appliedScale})`;
   updateZoomUI();
 }
 
@@ -1068,25 +1058,6 @@ function drawStampBar(ctx, canvasW, canvasH, data, settings) {
 const ASPECT_LONG_SHORT_PORTRAIT = 1.20;
 const ASPECT_LONG_SHORT_LANDSCAPE = 1.50;
 
-// Horizontally flips `source` (sw x sh) into a new canvas of the same
-// size. Used to correct rear-camera streams that some Android browser/OS
-// combinations deliver pre-mirrored (a real, device-specific quirk — the
-// rear camera has no reason to ever be mirrored, unlike a front/selfie
-// camera where mirroring is a UX convention, not a platform bug). See
-// DEFAULT_SETTINGS.mirrorRearCamera and its use in capturePhoto()/the live
-// preview transform.
-function mirrorFrameHorizontally(source, sw, sh) {
-  const canvas = document.createElement('canvas');
-  canvas.width = sw; canvas.height = sh;
-  const ctx = canvas.getContext('2d');
-  ctx.save();
-  ctx.translate(sw, 0);
-  ctx.scale(-1, 1);
-  ctx.drawImage(source, 0, 0, sw, sh);
-  ctx.restore();
-  return canvas;
-}
-
 // Rotates `source` (sw x sh) clockwise by correctionDeg into a new canvas,
 // swapping width/height for 90/270. This is the function verified against
 // the full 0/90/180/270 case table in tools/verify_orientation.js.
@@ -1137,11 +1108,10 @@ async function capturePhoto() {
     const rotation = effectiveRotation();
     const landscape = wantLandscapePhoto();
 
-    const shouldMirror = state.facing === 'environment' && state.settings.mirrorRearCamera;
-    const rawSource = shouldMirror
-      ? mirrorFrameHorizontally(video, video.videoWidth, video.videoHeight)
-      : video;
-    const upright = makeUprightCanvas(rawSource, video.videoWidth, video.videoHeight, rotation);
+    // Always the actual, unmodified camera frame — no mirroring for
+    // either camera, ever. What the sensor sees is exactly what gets
+    // rotated/cropped/stamped and saved.
+    const upright = makeUprightCanvas(video, video.videoWidth, video.videoHeight, rotation);
     const aspect = landscape ? ASPECT_LONG_SHORT_LANDSCAPE : 1 / ASPECT_LONG_SHORT_PORTRAIT;
     const crop = cropUprightCanvas(upright, aspect, state.zoom);
 

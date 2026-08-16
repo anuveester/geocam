@@ -4,7 +4,7 @@
    change, in lockstep with APP_BUILD in app.js, so the diagnostics panel's
    build number and the cache actually in use can never silently disagree. */
 
-const CACHE_NAME = 'geocam-cache-v3';
+const CACHE_NAME = 'geocam-cache-v4';
 
 const APP_SHELL = [
   './',
