@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 3;
+const APP_BUILD = 4;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -94,10 +94,18 @@ function loadSettings() {
   } catch (e) {
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
   }
+  normalizeSettings();
 }
 
 function saveSettings() {
+  normalizeSettings();
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+}
+
+function normalizeSettings() {
+  if (!state.settings) return;
+  state.settings.stampMargin = Math.max(0, Math.min(40, Number(state.settings.stampMargin) || 0));
+  state.settings.fontScale = Math.max(0.7, Math.min(1.5, Number(state.settings.fontScale) || 1));
 }
 
 function applySettingsToForm() {
@@ -124,12 +132,15 @@ function bindSettingsForm() {
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       const el = form.elements[key];
       if (!el) continue;
-      s[key] = el.type === 'checkbox' ? el.checked : el.value;
+      if (el.type === 'checkbox') s[key] = el.checked;
+      else if (key === 'stampMargin' || key === 'fontScale') s[key] = Number(el.value);
+      else s[key] = el.value;
     }
     state.settings = s;
+    normalizeSettings();
     saveSettings();
-    $('#marginVal').textContent = s.stampMargin;
-    $('#fontScaleVal').textContent = Number(s.fontScale).toFixed(2);
+    $('#marginVal').textContent = state.settings.stampMargin;
+    $('#fontScaleVal').textContent = state.settings.fontScale.toFixed(2);
     updateLiveStamp();
     if (s.mapStyle !== prevMapStyle || s.showMap !== prevShowMap) {
       liveMapLastKey = '';
@@ -914,8 +925,8 @@ function drawMeasuredText(ctx, measured, x, startY, mainColor, subColor) {
 function drawStampBar(ctx, canvasW, canvasH, data, settings) {
   const barH = canvasH * 0.25;
   const barY = canvasH - barH;
-  const margin = settings.stampMargin || 0;
-  const baseFontScale = settings.fontScale || 1;
+  const margin = Math.max(0, Math.min(40, Number(settings.stampMargin) || 0));
+  const baseFontScale = Math.max(0.7, Math.min(1.5, Number(settings.fontScale) || 1));
   const theme = settings.theme || 'dark';
   const isLight = theme === 'light';
   const textColor = isLight ? '#12181f' : '#ffffff';
@@ -950,7 +961,7 @@ function drawStampBar(ctx, canvasW, canvasH, data, settings) {
   const mapBoxMax = Math.min(contentH - badgeH, canvasW * 0.22);
   const wantMap = settings.showMap && data.mapCanvas;
   const mapBox = wantMap ? Math.max(40, mapBoxMax) : 0;
-  const textAreaW = contentW - (mapBox ? mapBox + contentW * 0.03 : 0);
+  const textAreaW = Math.max(1, contentW - (mapBox ? mapBox + contentW * 0.03 : 0));
 
   // ---- Pass 1: measure, shrinking iteratively (never truncating) ----
   let scale = 1;
