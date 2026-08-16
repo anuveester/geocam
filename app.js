@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 1;
+const APP_BUILD = 2;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -118,6 +118,8 @@ function bindSettingsForm() {
   const form = $('#settingsForm');
   if (!form) return;
   form.addEventListener('input', () => {
+    const prevMapStyle = state.settings.mapStyle;
+    const prevShowMap = state.settings.showMap;
     const s = Object.assign({}, state.settings);
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       const el = form.elements[key];
@@ -129,6 +131,10 @@ function bindSettingsForm() {
     $('#marginVal').textContent = s.stampMargin;
     $('#fontScaleVal').textContent = Number(s.fontScale).toFixed(2);
     updateLiveStamp();
+    if (s.mapStyle !== prevMapStyle || s.showMap !== prevShowMap) {
+      liveMapLastKey = '';
+      updateLiveMapThumbThrottled();
+    }
     const grid = $('#gridOverlay');
     if (grid) {
       if (s.showGrid) { grid.classList.add('show'); drawGridOverlay(); }
@@ -642,13 +648,15 @@ function updateLiveStamp() {
   $('#liveStamp').className = 'live-stamp theme-' + (s.theme || 'dark');
 }
 
-let liveMapLastLat = null, liveMapLastLon = null;
+let liveMapLastLat = null, liveMapLastLon = null, liveMapLastKey = '';
 async function updateLiveMapThumbThrottled() {
   const pos = state.position;
   const s = state.settings;
   if (!pos || !s || !s.showMap || s.mapStyle === 'none') return;
-  if (liveMapLastLat != null && distMeters(pos.lat, pos.lon, liveMapLastLat, liveMapLastLon) < 20) return;
+  const mapKey = s.mapStyle;
+  if (liveMapLastLat != null && liveMapLastKey === mapKey && distMeters(pos.lat, pos.lon, liveMapLastLat, liveMapLastLon) < 20) return;
   liveMapLastLat = pos.lat; liveMapLastLon = pos.lon;
+  liveMapLastKey = mapKey;
   const canvas = await renderMapThumbnail(160, pos.lat, pos.lon, s.mapStyle);
   const target = $('#liveMapCanvas');
   if (!target) return;
@@ -948,11 +956,10 @@ function drawStampBar(ctx, canvasW, canvasH, data, settings) {
   while (attempt < 8) {
     const available = contentH - badgeH;
     if (measured.totalH <= available || scale <= 0.55) break;
-    scale *= 0.92;
+    scale = Math.max(0.55, scale * 0.92);
     measured = measureStampText(ctx, data, settings, textAreaW, canvasH, baseFontScale * scale);
     attempt++;
   }
-  if (scale < 0.55) scale = 0.55;
 
   // ---- Pass 2: draw ----
   let cursorY = contentTop;
@@ -1249,7 +1256,11 @@ function bindEvents() {
   $('#btnGrid').addEventListener('click', () => {
     const canvas = $('#gridOverlay');
     canvas.classList.toggle('show');
-    if (canvas.classList.contains('show')) drawGridOverlay();
+    state.settings.showGrid = canvas.classList.contains('show');
+    saveSettings();
+    const checkbox = $('#settingsForm').elements.showGrid;
+    if (checkbox) checkbox.checked = state.settings.showGrid;
+    if (state.settings.showGrid) drawGridOverlay();
   });
 
   $all('.zoom-chip').forEach(btn => btn.addEventListener('click', () => applyZoom(parseFloat(btn.dataset.zoom))));
