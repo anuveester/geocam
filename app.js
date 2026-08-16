@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 6;
+const APP_BUILD = 7;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -1207,16 +1207,17 @@ async function capturePhoto() {
     const capture = { dataUrl, timestamp: Date.now(), lat: pos ? pos.lat : null, lon: pos ? pos.lon : null, savedId: null };
     state.lastCapture = capture;
 
-    // Auto-save: every captured photo is saved to the in-app gallery AND
-    // downloaded to the device automatically, right away — no separate
-    // manual "Save" step required, matching how the real GPS Map Camera
-    // app this clones behaves. Awaited before showing the preview so
-    // capture.savedId is already set if the user immediately taps
-    // Discard (see its handler — it deletes this same gallery entry).
+    // Auto-save: every captured photo is saved straight to the in-app
+    // gallery, right away — no separate manual "Save" step required. This
+    // does NOT trigger a system file download here (that used to fire a
+    // browser download prompt on every single capture); the system-save
+    // download only happens when the user explicitly taps Save. Awaited
+    // before showing the preview so capture.savedId is already set if the
+    // user immediately taps Discard (see its handler — it deletes this
+    // same gallery entry).
     try {
       capture.savedId = await savePhotoToGallery(dataUrl, { lat: capture.lat, lon: capture.lon });
-      downloadDataUrl(dataUrl, `geocam_${capture.timestamp}.jpg`);
-      toast('Photo saved');
+      toast('Photo saved to gallery');
     } catch (e) {
       console.warn('Auto-save failed', e);
       toast('Capture ok, but auto-save failed — try Save on the next screen');
@@ -1380,9 +1381,9 @@ function bindEvents() {
   $('#btnDiscard').addEventListener('click', async () => {
     // Every capture is auto-saved to the gallery already (see
     // capturePhoto). Discard undoes that by deleting the same gallery
-    // entry. It can only remove the in-app copy though — a file the
-    // browser already downloaded to the device's system storage is
-    // outside any web app's reach to delete; that part isn't undoable.
+    // entry. Capture no longer triggers a system download on its own, so
+    // there's nothing left over on the device's system storage to worry
+    // about unless the user had separately tapped Save.
     const cap = state.lastCapture;
     state.lastCapture = null;
     showScreen('camera');
