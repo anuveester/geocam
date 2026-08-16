@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 7;
+const APP_BUILD = 8;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -1398,15 +1398,28 @@ function bindEvents() {
   $('#btnSave').addEventListener('click', async () => {
     if (!state.lastCapture) return;
     // Capture already auto-saved to the gallery; avoid adding a duplicate
-    // entry if that succeeded, but always let this button re-trigger the
-    // system download (e.g. auto-save failed, or the user wants another copy).
-    if (state.lastCapture.savedId == null) {
-      try { state.lastCapture.savedId = await savePhotoToGallery(state.lastCapture.dataUrl, { lat: state.lastCapture.lat, lon: state.lastCapture.lon }); }
-      catch (e) { console.warn('Save to gallery failed', e); }
+    // entry if that succeeded, but always let this button retry the gallery
+    // save if it hadn't already, and always re-trigger the system download.
+    let galleryOk = state.lastCapture.savedId != null;
+    if (!galleryOk) {
+      try {
+        state.lastCapture.savedId = await savePhotoToGallery(state.lastCapture.dataUrl, { lat: state.lastCapture.lat, lon: state.lastCapture.lon });
+        galleryOk = true;
+      } catch (e) {
+        console.warn('Save to gallery failed', e);
+      }
     }
     downloadDataUrl(state.lastCapture.dataUrl, `geocam_${state.lastCapture.timestamp}.jpg`);
-    toast('Saved');
-    showScreen('camera');
+    // Land on the Gallery screen (instead of back on the camera) so the
+    // photo that was just saved is immediately visible, not just implied
+    // by a toast. showScreen('gallery') always re-reads storage fresh.
+    if (galleryOk) {
+      toast('Saved');
+      showScreen('gallery');
+    } else {
+      toast('Downloaded, but saving to the in-app gallery failed — see console for details');
+      showScreen('camera');
+    }
   });
 
   $('#btnViewerBack').addEventListener('click', () => showScreen('gallery'));
