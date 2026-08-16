@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 4;
+const APP_BUILD = 5;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -923,10 +923,14 @@ function drawMeasuredText(ctx, measured, x, startY, mainColor, subColor) {
 }
 
 function drawStampBar(ctx, canvasW, canvasH, data, settings) {
-  const barH = canvasH * 0.25;
-  const barY = canvasH - barH;
   const margin = Math.max(0, Math.min(40, Number(settings.stampMargin) || 0));
   const baseFontScale = Math.max(0.7, Math.min(1.5, Number(settings.fontScale) || 1));
+  // The font slider must change the exported stamp's usable space too.
+  // Otherwise the auto-fit pass shrinks large text back down to fit the
+  // original 25% bar, making 1.5x look almost identical to 1.0x.
+  const barRatio = Math.max(0.18, Math.min(0.38, 0.25 * baseFontScale));
+  const barH = canvasH * barRatio;
+  const barY = canvasH - barH;
   const theme = settings.theme || 'dark';
   const isLight = theme === 'light';
   const textColor = isLight ? '#12181f' : '#ffffff';
