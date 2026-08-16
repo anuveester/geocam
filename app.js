@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 4;
+const APP_BUILD = 5;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -277,6 +277,7 @@ function updateDiagnostics() {
     `Zoom: ${state.zoom.toFixed(2)}x  (range ${ZOOM_MIN}x-${ZOOM_MAX}x)`,
     `Cover/contain scale: ${state.coverScale.toFixed(3)} / ${state.containScale.toFixed(3)}`,
     `Facing: ${state.facing}`,
+    `Front-camera un-mirror active: ${state.facing === 'user'}`,
   ].join('\n');
 }
 
@@ -731,9 +732,10 @@ function applyZoom(z) {
   // Never shrink past "contain" — beyond that there is no more of the
   // buffer left to reveal, only wasted empty space.
   const appliedScale = Math.max(contain, cover * state.zoom);
-  // No mirroring, ever, for either camera — always the true, un-flipped
-  // sensor view, matching exactly what capturePhoto() saves.
-  video.style.transform = `translate(-50%, -50%) scale(${appliedScale})`;
+  // Front camera preview is un-mirrored here too, so it matches exactly
+  // what capturePhoto() saves. Rear camera is left completely alone.
+  const scaleX = state.facing === 'user' ? -appliedScale : appliedScale;
+  video.style.transform = `translate(-50%, -50%) scale(${scaleX}, ${appliedScale})`;
   updateZoomUI();
 }
 
@@ -1058,6 +1060,24 @@ function drawStampBar(ctx, canvasW, canvasH, data, settings) {
 const ASPECT_LONG_SHORT_PORTRAIT = 1.20;
 const ASPECT_LONG_SHORT_LANDSCAPE = 1.50;
 
+// The front/selfie camera's raw getUserMedia frames come pre-mirrored by
+// the browser/OS on this device (a "look in a mirror" UX convention some
+// platforms bake in at the source, not something this app's own code
+// does) — the rear camera's frames are never mirrored. So only the front
+// camera needs an explicit un-mirror to show/save the true, unflipped
+// scene; the rear camera is left completely untouched.
+function mirrorFrameHorizontally(source, sw, sh) {
+  const canvas = document.createElement('canvas');
+  canvas.width = sw; canvas.height = sh;
+  const ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.translate(sw, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(source, 0, 0, sw, sh);
+  ctx.restore();
+  return canvas;
+}
+
 // Rotates `source` (sw x sh) clockwise by correctionDeg into a new canvas,
 // swapping width/height for 90/270. This is the function verified against
 // the full 0/90/180/270 case table in tools/verify_orientation.js.
@@ -1108,10 +1128,13 @@ async function capturePhoto() {
     const rotation = effectiveRotation();
     const landscape = wantLandscapePhoto();
 
-    // Always the actual, unmodified camera frame — no mirroring for
-    // either camera, ever. What the sensor sees is exactly what gets
-    // rotated/cropped/stamped and saved.
-    const upright = makeUprightCanvas(video, video.videoWidth, video.videoHeight, rotation);
+    // Rear camera: use the raw frame exactly as-is (never mirrored).
+    // Front camera: un-mirror it first (see mirrorFrameHorizontally) so
+    // the saved photo shows the true, unflipped scene, matching the rear.
+    const captureSource = state.facing === 'user'
+      ? mirrorFrameHorizontally(video, video.videoWidth, video.videoHeight)
+      : video;
+    const upright = makeUprightCanvas(captureSource, video.videoWidth, video.videoHeight, rotation);
     const aspect = landscape ? ASPECT_LONG_SHORT_LANDSCAPE : 1 / ASPECT_LONG_SHORT_PORTRAIT;
     const crop = cropUprightCanvas(upright, aspect, state.zoom);
 
