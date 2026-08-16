@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 6;
+const APP_BUILD = 2;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -42,6 +42,8 @@ var state = {
   currentScreen: 'camera',
   facing: 'environment',
   zoom: 1,
+  coverScale: 1,
+  containScale: 1,
   stream: null,
   restarting: false,
   capturing: false,
@@ -82,7 +84,7 @@ var DEFAULT_SETTINGS = {
   savedOrientation: 'auto',
   rotationFix: 'auto',
   stampMargin: 0,
-  fontScale: 1.2,
+  fontScale: 1,
 };
 
 const SETTINGS_KEY = 'geocam_settings_v1';
@@ -94,18 +96,10 @@ function loadSettings() {
   } catch (e) {
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
   }
-  normalizeSettings();
 }
 
 function saveSettings() {
-  normalizeSettings();
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
-}
-
-function normalizeSettings() {
-  if (!state.settings) return;
-  state.settings.stampMargin = Math.max(0, Math.min(40, Number(state.settings.stampMargin) || 0));
-  state.settings.fontScale = Math.max(0.7, Math.min(1.5, Number(state.settings.fontScale) || 1));
 }
 
 function applySettingsToForm() {
@@ -126,26 +120,17 @@ function bindSettingsForm() {
   const form = $('#settingsForm');
   if (!form) return;
   form.addEventListener('input', () => {
-    const prevMapStyle = state.settings.mapStyle;
-    const prevShowMap = state.settings.showMap;
     const s = Object.assign({}, state.settings);
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       const el = form.elements[key];
       if (!el) continue;
-      if (el.type === 'checkbox') s[key] = el.checked;
-      else if (key === 'stampMargin' || key === 'fontScale') s[key] = Number(el.value);
-      else s[key] = el.value;
+      s[key] = el.type === 'checkbox' ? el.checked : el.value;
     }
     state.settings = s;
-    normalizeSettings();
     saveSettings();
-    $('#marginVal').textContent = state.settings.stampMargin;
-    $('#fontScaleVal').textContent = state.settings.fontScale.toFixed(2);
+    $('#marginVal').textContent = s.stampMargin;
+    $('#fontScaleVal').textContent = Number(s.fontScale).toFixed(2);
     updateLiveStamp();
-    if (s.mapStyle !== prevMapStyle || s.showMap !== prevShowMap) {
-      liveMapLastKey = '';
-      updateLiveMapThumbThrottled();
-    }
     const grid = $('#gridOverlay');
     if (grid) {
       if (s.showGrid) { grid.classList.add('show'); drawGridOverlay(); }
@@ -238,14 +223,11 @@ function physicalAngle() {
 }
 
 // Degrees to rotate the raw camera buffer CLOCKWISE to make its content
-// upright. The correction is the inverse of the physical device angle:
-// portrait stays 0, upside-down portrait stays 180, and the two landscape
-// buckets swap (90 -> 270, 270 -> 90). Using the physical angle directly
-// makes sideways captures land 180 degrees upside down while portrait looks
-// fine, which is exactly the easy-to-miss landscape-only failure mode.
+// upright, given the device has physically rotated by `angle` degrees from
+// natural portrait. (See makeUprightCanvas — verified against a full
+// 0/90/180/270 case table in tools/verify_orientation.js.)
 function rotationCorrection(angle) {
-  const a = ((angle % 360) + 360) % 360;
-  return (360 - a) % 360;
+  return ((angle % 360) + 360) % 360;
 }
 
 function wantLandscapePhoto() {
@@ -292,7 +274,8 @@ function updateDiagnostics() {
     `Preview box: ${wrap ? Math.round(wrap.clientWidth) : 0} x ${wrap ? Math.round(wrap.clientHeight) : 0}`,
     `Saved-orientation setting: ${state.settings.savedOrientation}`,
     `Rotation-fix setting: ${state.settings.rotationFix}`,
-    `Zoom: ${zoomLabel(state.zoom)}`,
+    `Zoom: ${state.zoom.toFixed(2)}x  (range ${ZOOM_MIN}x-${ZOOM_MAX}x)`,
+    `Cover/contain scale: ${state.coverScale.toFixed(3)} / ${state.containScale.toFixed(3)}`,
     `Facing: ${state.facing}`,
   ].join('\n');
 }
@@ -662,15 +645,13 @@ function updateLiveStamp() {
   $('#liveStamp').className = 'live-stamp theme-' + (s.theme || 'dark');
 }
 
-let liveMapLastLat = null, liveMapLastLon = null, liveMapLastKey = '';
+let liveMapLastLat = null, liveMapLastLon = null;
 async function updateLiveMapThumbThrottled() {
   const pos = state.position;
   const s = state.settings;
   if (!pos || !s || !s.showMap || s.mapStyle === 'none') return;
-  const mapKey = s.mapStyle;
-  if (liveMapLastLat != null && liveMapLastKey === mapKey && distMeters(pos.lat, pos.lon, liveMapLastLat, liveMapLastLon) < 20) return;
+  if (liveMapLastLat != null && distMeters(pos.lat, pos.lon, liveMapLastLat, liveMapLastLon) < 20) return;
   liveMapLastLat = pos.lat; liveMapLastLon = pos.lon;
-  liveMapLastKey = mapKey;
   const canvas = await renderMapThumbnail(160, pos.lat, pos.lon, s.mapStyle);
   const target = $('#liveMapCanvas');
   if (!target) return;
@@ -699,20 +680,59 @@ function drawGridOverlay() {
 
 /* ---------------------------------------------------------------------
    7. Zoom — purely digital, identical for front/back cameras (see spec §6)
+   -----------------------------------------------------------------------
+   Range is 0.5x-4x: 1x-4x zooms IN (crops tighter, as before). Below 1x
+   is a genuine zoom-OUT that reveals more of the buffer the camera
+   already captured — not a fake shrink. This only works because
+   idealCameraDims() (§5d) requests a generously large, aspect-neutral
+   buffer, which on most phones is noticeably wider-framed than what a
+   plain object-fit:cover crop shows on a tall phone screen; zooming out
+   reveals that extra margin, down to the point where the whole buffer is
+   visible (further "zoom out" than that has no more image data to show).
+
+   Because of this, #video's sizing can no longer be delegated to CSS
+   object-fit:cover (which would already have discarded that extra
+   margin before any JS transform ever saw it) — this code owns the
+   cover-fit math itself via updateCoverScale()/applyZoom(), using an
+   explicit translate+scale transform. That also means the previous
+   "empty-string transform at 1x" invariant no longer applies: the base
+   cover-fit scale is now always present in the transform, with `zoom`
+   layered on top of it.
    --------------------------------------------------------------------- */
 
-function applyZoom(z) {
-  state.zoom = Math.max(0, Math.min(4, z));
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 4;
+const ZOOM_CHIP_VALUES = [0.5, 1, 2, 3];
+
+// Recomputes the base "cover" and "contain" scale factors for the current
+// video buffer size vs. the on-screen preview box, and re-applies the
+// current zoom on top. Must be called whenever either changes: after the
+// camera (re)starts, and on window resize.
+function updateCoverScale() {
   const video = $('#video');
-  // Empty string (not scale(1)) at rest so 1x is a verifiable literal no-op.
-  const previewScale = state.zoom < 1 ? 0.82 + state.zoom * 0.18 : state.zoom;
-  video.style.transform = state.zoom === 1 ? '' : `scale(${previewScale})`;
-  updateZoomUI();
+  const wrap = $('#videoWrap');
+  if (!video || !wrap || !video.videoWidth || !video.videoHeight) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const cw = wrap.clientWidth || 1, ch = wrap.clientHeight || 1;
+  // Render the video at its own intrinsic pixel size; translate+scale
+  // (below) handles both centering and the cover/zoom math explicitly.
+  video.style.width = vw + 'px';
+  video.style.height = vh + 'px';
+  state.coverScale = Math.max(cw / vw, ch / vh);   // smallest scale that still fills the box (old object-fit:cover)
+  state.containScale = Math.min(cw / vw, ch / vh);  // scale at which the WHOLE buffer is visible — the zoom-out floor
+  applyZoom(state.zoom);
 }
 
-function zoomLabel(z) {
-  if (z === 0) return '0x';
-  return `${z.toFixed(z % 1 ? 1 : 0)}x`;
+function applyZoom(z) {
+  state.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+  const video = $('#video');
+  const cover = state.coverScale || 1;
+  const contain = state.containScale || cover;
+  // Never shrink past "contain" — beyond that there is no more of the
+  // buffer left to reveal, only wasted empty space.
+  const appliedScale = Math.max(contain, cover * state.zoom);
+  video.style.transform = `translate(-50%, -50%) scale(${appliedScale})`;
+  updateZoomUI();
 }
 
 function updateZoomUI() {
@@ -779,6 +799,7 @@ async function startCamera() {
     video.srcObject = stream;
     await waitForVideoReady(video);
     await video.play().catch(() => {});
+    updateCoverScale();
   } catch (err) {
     console.error('getUserMedia failed', err);
     toast('Could not access camera: ' + (err && err.message ? err.message : err));
@@ -929,15 +950,10 @@ function drawMeasuredText(ctx, measured, x, startY, mainColor, subColor) {
 }
 
 function drawStampBar(ctx, canvasW, canvasH, data, settings) {
-  const margin = Math.max(0, Math.min(40, Number(settings.stampMargin) || 0));
-  const requestedFontScale = Math.max(0.7, Math.min(1.5, Number(settings.fontScale) || 1.2));
-  const baseFontScale = Math.max(0.7, Math.min(1.5, requestedFontScale + (settings._captureLandscape ? 0.3 : 0)));
-  // The font slider must change the exported stamp's usable space too.
-  // Otherwise the auto-fit pass shrinks large text back down to fit the
-  // original 25% bar, making 1.5x look almost identical to 1.0x.
-  const barRatio = Math.max(0.18, Math.min(0.38, 0.25 * baseFontScale));
-  const barH = canvasH * barRatio;
+  const barH = canvasH * 0.25;
   const barY = canvasH - barH;
+  const margin = settings.stampMargin || 0;
+  const baseFontScale = settings.fontScale || 1;
   const theme = settings.theme || 'dark';
   const isLight = theme === 'light';
   const textColor = isLight ? '#12181f' : '#ffffff';
@@ -972,7 +988,7 @@ function drawStampBar(ctx, canvasW, canvasH, data, settings) {
   const mapBoxMax = Math.min(contentH - badgeH, canvasW * 0.22);
   const wantMap = settings.showMap && data.mapCanvas;
   const mapBox = wantMap ? Math.max(40, mapBoxMax) : 0;
-  const textAreaW = Math.max(1, contentW - (mapBox ? mapBox + contentW * 0.03 : 0));
+  const textAreaW = contentW - (mapBox ? mapBox + contentW * 0.03 : 0);
 
   // ---- Pass 1: measure, shrinking iteratively (never truncating) ----
   let scale = 1;
@@ -981,10 +997,11 @@ function drawStampBar(ctx, canvasW, canvasH, data, settings) {
   while (attempt < 8) {
     const available = contentH - badgeH;
     if (measured.totalH <= available || scale <= 0.55) break;
-    scale = Math.max(0.55, scale * 0.92);
+    scale *= 0.92;
     measured = measureStampText(ctx, data, settings, textAreaW, canvasH, baseFontScale * scale);
     attempt++;
   }
+  if (scale < 0.55) scale = 0.55;
 
   // ---- Pass 2: draw ----
   let cursorY = contentTop;
@@ -1032,6 +1049,13 @@ function drawStampBar(ctx, canvasW, canvasH, data, settings) {
    center-crop to it -> apply zoom crop -> draw final canvas -> draw stamp.
    --------------------------------------------------------------------- */
 
+// Default output aspect ratios, expressed as long-edge : short-edge:
+//   portrait  -> 1.20 : 1  (height:width) — close to a 6:5 frame
+//   landscape -> 1.50 : 1  (width:height) — classic 3:2 frame
+// aspectWH below is always width/height, so portrait needs the reciprocal.
+const ASPECT_LONG_SHORT_PORTRAIT = 1.20;
+const ASPECT_LONG_SHORT_LANDSCAPE = 1.50;
+
 // Rotates `source` (sw x sh) clockwise by correctionDeg into a new canvas,
 // swapping width/height for 90/270. This is the function verified against
 // the full 0/90/180/270 case table in tools/verify_orientation.js.
@@ -1057,40 +1081,16 @@ function cropUprightCanvas(canvas, aspectWH, zoom) {
   let cw, ch;
   if (W / H > aspectWH) { ch = H; cw = H * aspectWH; }
   else { cw = W; ch = W / aspectWH; }
-  cw = cw / zoom; ch = ch / zoom;
+  // zoom > 1 shrinks the crop (zoom in); zoom < 1 enlarges it (zoom out,
+  // matching the live preview's zoom-out behavior — see §7), so clamp back
+  // to the upright canvas's own bounds since there's no buffer data beyond it.
+  cw = Math.min(W, cw / zoom);
+  ch = Math.min(H, ch / zoom);
   const cx = W / 2, cy = H / 2;
   let sx = cx - cw / 2, sy = cy - ch / 2;
   sx = Math.max(0, Math.min(W - cw, sx));
   sy = Math.max(0, Math.min(H - ch, sy));
   return { sx, sy, sw: cw, sh: ch };
-}
-
-function drawCameraFrame(ctx, source, crop, outW, outH, zoom) {
-  if (zoom >= 1) {
-    ctx.drawImage(source, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
-    return;
-  }
-
-  ctx.save();
-  ctx.drawImage(source, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
-  ctx.fillStyle = 'rgba(0,0,0,0.22)';
-  ctx.fillRect(0, 0, outW, outH);
-  ctx.restore();
-
-  const containScale = 0.82 + zoom * 0.18;
-  const sourceAspect = source.width / source.height;
-  const outAspect = outW / outH;
-  let dw, dh;
-  if (sourceAspect > outAspect) {
-    dw = outW * containScale;
-    dh = dw / sourceAspect;
-  } else {
-    dh = outH * containScale;
-    dw = dh * sourceAspect;
-  }
-  const dx = (outW - dw) / 2;
-  const dy = (outH - dh) / 2;
-  ctx.drawImage(source, 0, 0, source.width, source.height, dx, dy, dw, dh);
 }
 
 async function capturePhoto() {
@@ -1107,8 +1107,8 @@ async function capturePhoto() {
     const landscape = wantLandscapePhoto();
 
     const upright = makeUprightCanvas(video, video.videoWidth, video.videoHeight, rotation);
-    const aspect = landscape ? 4 / 3 : 3 / 4;
-    const crop = cropUprightCanvas(upright, aspect, Math.max(1, state.zoom));
+    const aspect = landscape ? ASPECT_LONG_SHORT_LANDSCAPE : 1 / ASPECT_LONG_SHORT_PORTRAIT;
+    const crop = cropUprightCanvas(upright, aspect, state.zoom);
 
     const MAX_EDGE = 2000;
     let outW, outH;
@@ -1120,9 +1120,9 @@ async function capturePhoto() {
     const finalCanvas = document.createElement('canvas');
     finalCanvas.width = outW; finalCanvas.height = outH;
     const fctx = finalCanvas.getContext('2d');
-    drawCameraFrame(fctx, upright, crop, outW, outH, state.zoom);
+    fctx.drawImage(upright, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
 
-    const settings = Object.assign({}, state.settings, { _captureLandscape: landscape });
+    const settings = state.settings;
     const pos = state.position;
     const place = state.place;
     const now = new Date();
@@ -1157,7 +1157,7 @@ async function capturePhoto() {
       // Redraw without the map image rather than failing the capture.
       data.mapCanvas = null;
       fctx.clearRect(0, 0, outW, outH);
-      drawCameraFrame(fctx, upright, crop, outW, outH, state.zoom);
+      fctx.drawImage(upright, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
       drawStampBar(fctx, outW, outH, data, settings);
       dataUrl = finalCanvas.toDataURL('image/jpeg', quality);
       toast('Map thumbnail unavailable — saved without it');
@@ -1309,11 +1309,7 @@ function bindEvents() {
   $('#btnGrid').addEventListener('click', () => {
     const canvas = $('#gridOverlay');
     canvas.classList.toggle('show');
-    state.settings.showGrid = canvas.classList.contains('show');
-    saveSettings();
-    const checkbox = $('#settingsForm').elements.showGrid;
-    if (checkbox) checkbox.checked = state.settings.showGrid;
-    if (state.settings.showGrid) drawGridOverlay();
+    if (canvas.classList.contains('show')) drawGridOverlay();
   });
 
   $all('.zoom-chip').forEach(btn => btn.addEventListener('click', () => applyZoom(parseFloat(btn.dataset.zoom))));
@@ -1356,6 +1352,10 @@ function bindEvents() {
   window.addEventListener('resize', () => {
     if ($('#gridOverlay').classList.contains('show')) drawGridOverlay();
   });
+  // Cheap immediate recalculation so the preview's cover/zoom math stays
+  // correct right away, ahead of the heavier debounced camera restart
+  // below (which only matters once the orientation bucket actually flips).
+  window.addEventListener('resize', updateCoverScale);
   window.addEventListener('resize', handleOrientationChange);
   window.addEventListener('orientationchange', handleOrientationChange);
 }
