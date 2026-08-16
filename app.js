@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 2;
+const APP_BUILD = 3;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -227,11 +227,14 @@ function physicalAngle() {
 }
 
 // Degrees to rotate the raw camera buffer CLOCKWISE to make its content
-// upright, given the device has physically rotated by `angle` degrees from
-// natural portrait. (See makeUprightCanvas — verified against a full
-// 0/90/180/270 case table in tools/verify_orientation.js.)
+// upright. The correction is the inverse of the physical device angle:
+// portrait stays 0, upside-down portrait stays 180, and the two landscape
+// buckets swap (90 -> 270, 270 -> 90). Using the physical angle directly
+// makes sideways captures land 180 degrees upside down while portrait looks
+// fine, which is exactly the easy-to-miss landscape-only failure mode.
 function rotationCorrection(angle) {
-  return ((angle % 360) + 360) % 360;
+  const a = ((angle % 360) + 360) % 360;
+  return (360 - a) % 360;
 }
 
 function wantLandscapePhoto() {
