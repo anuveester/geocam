@@ -7,7 +7,7 @@
    number so stale-cache issues can be told apart from real bugs at a glance.
    ========================================================================= */
 
-const APP_BUILD = 5;
+const APP_BUILD = 6;
 
 /* ---------------------------------------------------------------------
    1. Utilities & screen management
@@ -65,7 +65,7 @@ var state = {
 
 var DEFAULT_SETTINGS = {
   coordFormat: 'latlong',
-  mapStyle: 'standard',
+  mapStyle: 'satellite',
   datetimeFormat: 'full',
   theme: 'dark',
   watermark: '',
@@ -82,7 +82,7 @@ var DEFAULT_SETTINGS = {
   savedOrientation: 'auto',
   rotationFix: 'auto',
   stampMargin: 0,
-  fontScale: 1,
+  fontScale: 1.2,
 };
 
 const SETTINGS_KEY = 'geocam_settings_v1';
@@ -292,7 +292,7 @@ function updateDiagnostics() {
     `Preview box: ${wrap ? Math.round(wrap.clientWidth) : 0} x ${wrap ? Math.round(wrap.clientHeight) : 0}`,
     `Saved-orientation setting: ${state.settings.savedOrientation}`,
     `Rotation-fix setting: ${state.settings.rotationFix}`,
-    `Zoom: ${state.zoom.toFixed(2)}x`,
+    `Zoom: ${zoomLabel(state.zoom)}`,
     `Facing: ${state.facing}`,
   ].join('\n');
 }
@@ -702,11 +702,17 @@ function drawGridOverlay() {
    --------------------------------------------------------------------- */
 
 function applyZoom(z) {
-  state.zoom = Math.max(1, Math.min(4, z));
+  state.zoom = Math.max(0, Math.min(4, z));
   const video = $('#video');
   // Empty string (not scale(1)) at rest so 1x is a verifiable literal no-op.
-  video.style.transform = state.zoom === 1 ? '' : `scale(${state.zoom})`;
+  const previewScale = state.zoom < 1 ? 0.82 + state.zoom * 0.18 : state.zoom;
+  video.style.transform = state.zoom === 1 ? '' : `scale(${previewScale})`;
   updateZoomUI();
+}
+
+function zoomLabel(z) {
+  if (z === 0) return '0x';
+  return `${z.toFixed(z % 1 ? 1 : 0)}x`;
 }
 
 function updateZoomUI() {
@@ -924,7 +930,8 @@ function drawMeasuredText(ctx, measured, x, startY, mainColor, subColor) {
 
 function drawStampBar(ctx, canvasW, canvasH, data, settings) {
   const margin = Math.max(0, Math.min(40, Number(settings.stampMargin) || 0));
-  const baseFontScale = Math.max(0.7, Math.min(1.5, Number(settings.fontScale) || 1));
+  const requestedFontScale = Math.max(0.7, Math.min(1.5, Number(settings.fontScale) || 1.2));
+  const baseFontScale = Math.max(0.7, Math.min(1.5, requestedFontScale + (settings._captureLandscape ? 0.3 : 0)));
   // The font slider must change the exported stamp's usable space too.
   // Otherwise the auto-fit pass shrinks large text back down to fit the
   // original 25% bar, making 1.5x look almost identical to 1.0x.
@@ -1058,6 +1065,34 @@ function cropUprightCanvas(canvas, aspectWH, zoom) {
   return { sx, sy, sw: cw, sh: ch };
 }
 
+function drawCameraFrame(ctx, source, crop, outW, outH, zoom) {
+  if (zoom >= 1) {
+    ctx.drawImage(source, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
+    return;
+  }
+
+  ctx.save();
+  ctx.drawImage(source, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.fillRect(0, 0, outW, outH);
+  ctx.restore();
+
+  const containScale = 0.82 + zoom * 0.18;
+  const sourceAspect = source.width / source.height;
+  const outAspect = outW / outH;
+  let dw, dh;
+  if (sourceAspect > outAspect) {
+    dw = outW * containScale;
+    dh = dw / sourceAspect;
+  } else {
+    dh = outH * containScale;
+    dw = dh * sourceAspect;
+  }
+  const dx = (outW - dw) / 2;
+  const dy = (outH - dh) / 2;
+  ctx.drawImage(source, 0, 0, source.width, source.height, dx, dy, dw, dh);
+}
+
 async function capturePhoto() {
   if (state.restarting) { toast('Camera is restarting — try again in a moment'); return; }
   if (state.capturing) return;
@@ -1073,7 +1108,7 @@ async function capturePhoto() {
 
     const upright = makeUprightCanvas(video, video.videoWidth, video.videoHeight, rotation);
     const aspect = landscape ? 4 / 3 : 3 / 4;
-    const crop = cropUprightCanvas(upright, aspect, state.zoom);
+    const crop = cropUprightCanvas(upright, aspect, Math.max(1, state.zoom));
 
     const MAX_EDGE = 2000;
     let outW, outH;
@@ -1085,9 +1120,9 @@ async function capturePhoto() {
     const finalCanvas = document.createElement('canvas');
     finalCanvas.width = outW; finalCanvas.height = outH;
     const fctx = finalCanvas.getContext('2d');
-    fctx.drawImage(upright, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
+    drawCameraFrame(fctx, upright, crop, outW, outH, state.zoom);
 
-    const settings = state.settings;
+    const settings = Object.assign({}, state.settings, { _captureLandscape: landscape });
     const pos = state.position;
     const place = state.place;
     const now = new Date();
@@ -1122,7 +1157,7 @@ async function capturePhoto() {
       // Redraw without the map image rather than failing the capture.
       data.mapCanvas = null;
       fctx.clearRect(0, 0, outW, outH);
-      fctx.drawImage(upright, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outW, outH);
+      drawCameraFrame(fctx, upright, crop, outW, outH, state.zoom);
       drawStampBar(fctx, outW, outH, data, settings);
       dataUrl = finalCanvas.toDataURL('image/jpeg', quality);
       toast('Map thumbnail unavailable — saved without it');
